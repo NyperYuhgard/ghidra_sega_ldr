@@ -2,4 +2,9 @@
 /build/
 /dist/
 /bin/
+/lib/
+/emumods/
+/TestingProyects/
+/scratch/
+/gradle.properties
 *.class
