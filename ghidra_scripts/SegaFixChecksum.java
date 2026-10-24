@@ -3,6 +3,7 @@
 //@keytool
 //@menu
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import ghidra.app.script.GhidraScript;
@@ -21,6 +22,14 @@ public class SegaFixChecksum extends GhidraScript {
 		MemoryBlock rom = currentProgram.getMemory().getBlock("ROM");
 		if (rom == null || rom.getStart().getOffset() != 0) {
 			println("The ROM block is missing or does not start at 0, nothing to fix.");
+			return;
+		}
+
+		// An 8-bit cartridge has a ROM block at 0 as well, and no 0x18E to write to.
+		byte[] signature = new byte[4];
+		currentProgram.getMemory().getBytes(toAddr(0x100), signature);
+		if (!new String(signature, StandardCharsets.US_ASCII).equals("SEGA")) {
+			println("Nothing says SEGA at 0x100, so this is not a 16-bit cartridge; nothing to fix.");
 			return;
 		}
 

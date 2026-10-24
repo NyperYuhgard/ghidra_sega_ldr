@@ -21,9 +21,8 @@ import ghidra.app.util.Option;
 import ghidra.app.util.opinion.Loader;
 
 /**
- * Optional parts of the Mega Drive memory map. Offered in the import dialog and settable in a
- * headless import, e.g.
- * {@code -loader SegaLoader -loader-32x true -loader-sram-file save.srm}.
+ * The options every Sega loader offers, and the helpers that read them out of an import. Values
+ * that only one family understands, like the 32X segments, stay in that loader's own list.
  */
 record SegaLoadOptions(boolean create32XSegments, boolean createSegaCDSegments,
 		boolean createHardwareRegisters, boolean verify, String sramFile) {
@@ -57,7 +56,7 @@ record SegaLoadOptions(boolean create32XSegments, boolean createSegaCDSegments,
 			getString(options, NAME_SRAM_FILE));
 	}
 
-	private static String getString(List<Option> options, String name) {
+	static String getString(List<Option> options, String name) {
 		if (options != null) {
 			for (Option option : options) {
 				if (name.equals(option.getName()) && option.getValue() instanceof String s
@@ -69,7 +68,7 @@ record SegaLoadOptions(boolean create32XSegments, boolean createSegaCDSegments,
 		return null;
 	}
 
-	private static boolean getBoolean(List<Option> options, String name, boolean defaultValue) {
+	static boolean getBoolean(List<Option> options, String name, boolean defaultValue) {
 		if (options != null) {
 			for (Option option : options) {
 				if (name.equals(option.getName())) {

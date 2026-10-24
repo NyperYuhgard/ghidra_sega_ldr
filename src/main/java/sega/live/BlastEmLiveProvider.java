@@ -35,18 +35,23 @@ import ghidra.util.filechooser.ExtensionFileFilter;
  */
 public class BlastEmLiveProvider extends ComponentProviderAdapter {
 
-	/** The machine names BlastEm's {@code -m} accepts, with what they mean. */
+	/**
+	 * The machine names BlastEm's {@code -m} accepts, with what they mean. An empty id leaves the
+	 * switch out and lets the emulator read the image, which is the only way to reach a Sega CD disc.
+	 */
 	private static final String[][] MACHINES = {
+		{ "", "Detect from the image" },
 		{ "gen", "Mega Drive / Genesis (68000)" },
-		{ "32x", "32X (68000 + SuperH)" },
-		{ "pico", "Pico (68000 + ARM)" },
+		{ "32x", "32X (68000 + two SH-2)" },
+		{ "32xcd", "32X over a Sega CD disc" },
+		{ "pico", "Pico (68000)" },
+		{ "copera", "Copera (68000)" },
 		{ "sms", "Master System (Z80)" },
 		{ "gg", "Game Gear (Z80)" },
 		{ "sg", "SG-1000 (Z80)" },
 		{ "sc", "SC-3000 (Z80)" },
-		{ "copera", "Mega CD with Copera add-on" },
-		{ "media", "Mega CD (68000 main CPU)" },
-		{ "laser", "LaserActive (68000)" },
+		{ "media", "Media player (VGM / WAV / FLAC, no CPU to trace)" },
+		{ "laser", "LaserActive (NEC UPD78K237, no trace)" },
 	};
 
 	/** What the panel asks the plugin to do. */
@@ -84,7 +89,7 @@ public class BlastEmLiveProvider extends ComponentProviderAdapter {
 	private JTextArea logArea;
 	private JLabel countsLabel;
 
-	private String selectedMachineId = "gen";
+	private String selectedMachineId = "";
 	private IngestCommand.Mode selectedMode = IngestCommand.Mode.ANALYSIS_QUEUE;
 
 	private JComponent component;
@@ -144,7 +149,7 @@ public class BlastEmLiveProvider extends ComponentProviderAdapter {
 		romField = new JTextField(24);
 		executableField = new JTextField(defaultExecutable(), 24);
 		machineBox = new JComboBox<>(machineLabels());
-		machineBox.setSelectedIndex(machineIndexOf("gen"));
+		machineBox.setSelectedIndex(machineIndexOf(""));
 		machineBox.addActionListener(e -> selectedMachineId = machineIdAt(machineBox.getSelectedIndex()));
 		workingDirectoryField = new JTextField(24);
 		argumentsField = new JTextField(24);
@@ -178,8 +183,10 @@ public class BlastEmLiveProvider extends ComponentProviderAdapter {
 		browseFolderButton.addActionListener(
 			e -> choose(workingDirectoryField, GhidraFileChooserMode.DIRECTORIES_ONLY));
 
-		machineBox.setToolTipText("Only the 68000 machines give Ghidra a trace: BlastEm logs no addresses "
-			+ "for the Z80 of the Master System and friends.");
+		machineBox.setToolTipText("BlastEm reads the console from the image, so detecting is usually right.\n"
+			+ "Master System and Game Gear are told apart by the file extension, so name a Game Gear image .gg.\n"
+			+ "Only the 68000 machines give Ghidra a trace: BlastEm logs no addresses for the Z80 of the\n"
+			+ "Master System and friends, nor for the NEC CPU of the LaserActive.");
 
 		at.gridx = 0;
 		at.gridy = 0;
