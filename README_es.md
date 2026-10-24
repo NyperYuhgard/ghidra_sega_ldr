@@ -1,11 +1,11 @@
 # Cargadores de Sega para Ghidra
 
-Cargadores y módulo de análisis para Ghidra dirigido a imágenes de cartucho de Sega: Mega Drive /
-Genesis y Sega 32X, con hueco para la ventana de programa del Sega CD cuando la imagen la trae, y
-Master System y Game Gear. Cada uno reconstruye el espacio de direcciones de la consola a partir de la
-cabecera del ROM, pone nombre a los registros del hardware, aplica las estructuras de cabecera y de
-tabla de vectores, y puede desensamblar el programa mientras el código se ejecuta de verdad en el
-emulador BlastEm.
+Cargadores y módulo de análisis para Ghidra dirigido a imágenes de cartucho y de disco de Sega: Mega
+Drive / Genesis y Sega 32X, con hueco para la ventana de programa del Sega CD cuando la imagen la trae,
+Master System y Game Gear, y los dos procesadores 68000 de un disco Sega CD. Cada uno reconstruye el
+espacio de direcciones de la consola a partir de la cabecera del ROM o del disco, pone nombre a los
+registros del hardware, aplica las estructuras de cabecera y de tabla de vectores, y puede desensamblar
+el programa mientras el código se ejecuta de verdad en el emulador BlastEm.
 
 Parte del cargador original de **Dr. MefistO** ([lab313ru/ghidra_sega_ldr](https://github.com/lab313ru/ghidra_sega_ldr));
 ver [Créditos](#créditos) para la autoría y para lo que cambia este fork.
@@ -18,6 +18,7 @@ ver [Créditos](#créditos) para la autoría y para lo que cambia este fork.
 
 - [Qué construye el cargador](#qué-construye-el-cargador)
 - [Master System y Game Gear](#master-system-y-game-gear)
+- [Sega CD](#sega-cd)
 - [Opciones de importación](#opciones-de-importación)
 - [Verificación de la cabecera](#verificación-de-la-cabecera)
 - [Analizador: variables con offset negativo](#analizador-variables-con-offset-negativo)
@@ -36,18 +37,21 @@ ver [Créditos](#créditos) para la autoría y para lo que cambia este fork.
 
 ## Qué construye el cargador
 
-El módulo instala un cargador por familia: el formato de ejecutable que queda grabado en un programa es
-el nombre del cargador, y cada consola necesita su propio lenguaje y su propio espacio de direcciones.
+El módulo instala un cargador por familia, y uno por procesador cuando una máquina ejecuta dos: el
+formato de ejecutable que queda grabado en un programa es el nombre del cargador, y cada consola
+necesita su propio lenguaje y su propio espacio de direcciones.
 
 | Cargador | Reconocer el objetivo | Lenguaje |
 | --- | --- | --- |
 | `SegaLoader` — *Sega Mega Drive / Genesis Loader* | `SEGA` en `0x100` | `68000:BE:32:MC68020` |
 | | un cartucho de 32X lleva además `MARS CHECK MODE` en `0x3C0`, y se ofrece una segunda vez | `SuperH:BE:32:SH-2` |
 | `SegaSmsLoader` — *Sega Master System / Game Gear Loader* | `TMR SEGA` en `0x7FF0`, si no en `0x3FF0`, si no en `0x1FF0` | `z80:LE:16:default` |
+| `SegaCdMainLoader` — *Sega CD Loader (Main 68000)* | `SEGADISCSYSTEM` en `0x0` o en `0x10` de la imagen, o una hoja `.cue` cuyo volcado lo lleve | `68000:BE:32:MC68020` |
+| `SegaCdSubLoader` — *Sega CD Loader (Sub 68000)* | el mismo disco, y hay que pedirlo por nombre | `68000:BE:32:MC68020` |
 
 Todo lo que hay bajo este epígrafe se crea durante la importación, antes de que corra ningún análisis, y
 cubre las máquinas de 68000. Las de 8 bits tienen su propio epígrafe:
-[Master System y Game Gear](#master-system-y-game-gear).
+[Master System y Game Gear](#master-system-y-game-gear), y el disco también: [Sega CD](#sega-cd).
 
 ### Memoria del cartucho y del sistema
 
@@ -74,7 +78,7 @@ para esos mismos registros.
 | `SYS2` | `0xA11000` | `IO_RAMMODE` |
 | `Z802` | `0xA11100` | `IO_Z80BUS` |
 | `Z803` | `0xA11200` | `IO_Z80RES` |
-| `FDC` | `0xA12000` | `IO_FDC` (0x100 bytes) |
+| `FDC` | `0xA12000` | `IO_FDC` (0x100 bytes); no se crea para un disco Sega CD, cuyo ASIC responde ahí en su lugar |
 | `TIME` | `0xA13000` | `IO_TIME` (0x100 bytes, o 0xEC cuando hay segmentos del 32X para que `0xA130EC` se quede con el 32X) |
 | `TMSS` | `0xA14000` | `IO_TMSS` |
 | `VDP` | `0xC00000` | `VDP_DATA`, `VDP__DATA`, `VDP_CTRL`, `VDP__CTRL`, `VDP_CNTR`, `VDP__CNTR`, `VDP___CNTR`, `VDP____CNTR`, `VDP_PSG` |
@@ -190,6 +194,122 @@ un checksum que se calcula paginando con escrituras en `0x0000`, `0x4000` y `0x8
 exportación se niega a arrancar un juego cuyo checksum no cuadra, así que una imagen de Game Gear o
 japonesa suele llevar un campo que la consola nunca lee.
 
+## Sega CD
+
+Un disco son dos programas en dos procesadores 68000 que llegan a las mismas memorias a través de un solo
+ASIC, y cada uno ve esas memorias en una dirección distinta. Así que un disco tiene dos vistas, y lo que
+decide entre ellas es el cargador que la importación nombre.
+
+### Dos cargadores, un disco
+
+| Vista | Cargador | Lo que recibe |
+| --- | --- | --- |
+| la consola | `SegaCdMainLoader` — *Sega CD Loader (Main 68000)* | la ROM de arranque del CD donde se coloca un cartucho, la RAM de programa por la ventana que alcanza la consola, la RAM de palabras y la imagen de celdas, la región de puertos con el ASIC dentro, y la RAM de trabajo con el programa que arrancó con el disco |
+| la unidad | `SegaCdSubLoader` — *Sega CD Loader (Sub 68000)* | los 512 KiB enteros de RAM de programa con el programa propio del disco dentro, la RAM de palabras por sus dos ventanas, la RAM con pila, la memoria de sonido y el ASIC en lo alto del espacio de direcciones |
+
+Una importación que no nombra ningún cargador cae en la vista del procesador que ejecuta la consola,
+porque es ese el para el que está escrito un programa del disco. La vista propia de la unidad se pide
+con `-loader SegaCdSubLoader`, o se escoge de la lista de cargadores del diálogo de importación. Un
+programa en Ghidra es un procesador, así que las dos vistas de un disco significan importar la imagen dos
+veces.
+
+### El disco, y lo que se lee de él
+
+Una imagen se acepta cuando sus primeros bytes, o los dieciséis que vienen después, son
+`SEGADISCSYSTEM`: una pista de sectores de 2048 bytes, o un volcado en crudo de sectores de 2352. Una
+hoja `.cue` también se acepta: su primera pista `MODE1` nombra el volcado que hay que leer y el sector en
+el que empieza su zona de programa, que es lo que sitúa las lecturas.
+
+Lo que el cargador saca del disco es poco y fijo:
+
+- el **primer sector**, `0x800` bytes de cabecera, leídos por sus campos de dispositivo y región, su
+  versión, su fecha de publicación y sus dos zonas de programa;
+- el **programa de la unidad**, desde la dirección del disco y la longitud del primer par (`0x40` y
+  `0x44`), colocado donde ese procesador lo ejecuta;
+- el **programa de la consola**, que no es una promesa que el disco haga: la etapa de arranque siempre
+  toma 1,5 KiB de `0x200` del disco y los pone en el fondo de la RAM de trabajo, desde donde piden a la
+  unidad el resto del juego.
+
+El segundo par de la cabecera (`0x48` y `0x4c`) se lee y se informa; ningún disco hace que la consola
+lea desde donde ese par dice, así que a uno que lo rellene de otra cosa se avisa de ello y no se le
+cree más.
+
+### Vista del lado del cartucho
+
+| Bloque | Dirección | Contenido |
+| --- | --- | --- |
+| `BIOS_ROM` | `0x000000`–`0x01FFFF` | la ROM de arranque, 128 KiB; bytes de `-loader-cd-bios`, un agujero del mismo tamaño sin ellos |
+| `BIOS_ROM` | `0x040000`–`0x05FFFF` | el alias de esa misma ROM, solo cuando se le dieron sus bytes |
+| `PROGRAM_RAM` | `0x020000`–`0x025FFF` | la RAM de programa baja por la ventana que se le da a este procesador |
+| `DISC_PROGRAM` | `0x026000` + | el programa de la unidad, los mismos bytes que muestra la vista propia de la unidad |
+| `PROGRAM_RAM_FREE` | … – `0x03FFFF` | el resto de esa ventana |
+| `WORD_RAM` | `0x200000`–`0x21FFFF` | 128 KiB de la RAM de palabras del ASIC, el banco que selecciona el `GATE_ARRAY` |
+| `CELL_IMAGE` | `0x220000`–`0x23FFFF` | la ventana de esa RAM de la que el ASIC dibuja su tipografía en pantalla |
+| `GATE_ARRAY` | `0xA12000` | los registros del ASIC, donde un cartucho pone un controlador de disquetera |
+| `BOOT_PROGRAM` | `0xFF0000`–`0xFF05FF` | el programa que arrancó con el disco, y `BOOT_entry` en su primer byte |
+| `WORK_RAM_FREE` | `0xFF0600`–`0xFFFFFF` | la RAM de trabajo después de él |
+
+Los bloques de Genesis de [Registros del hardware](#registros-del-hardware) llegan con esta vista —
+`Z80`, `SYS1`, `SYS2`, `Z802`, `Z803`, `TIME`, `TMSS`, `VDP` — menos `FDC`, cuya dirección se la queda el
+ASIC.
+
+### Vista del lado de la unidad
+
+| Bloque | Dirección | Contenido |
+| --- | --- | --- |
+| `PROGRAM_RAM` | `0x000000`–`0x005FFF` | la RAM de programa baja, donde la etapa de arranque guarda los vectores y el espacio de trabajo de este procesador |
+| `DISC_PROGRAM` | `0x006000` + | el programa del disco, desde la dirección que declara su cabecera |
+| `PROGRAM_RAM_FREE` | … – `0x07FFFF` | el resto de los 512 KiB de los que dispone este procesador |
+| `WORD_RAM` | `0x080000`–`0x0BFFFF` | 256 KiB, la RAM de palabras entera del ASIC |
+| `WORD_RAM_1M` | `0x0C0000`–`0x0DFFFF` | esa misma RAM por la ventana que solo enseña su primera mitad |
+| `BACKUP_RAM` | `0xFE0000`– | 8 KiB de RAM con pila, respondidos en las direcciones impares de una ventana de 64 KiB; bytes de `-loader-cd-bram` |
+| `BACKUP_RAM_FREE` | … – `0xFEFFFF` | el resto de esa ventana, cuando la partida guardada no la llena |
+| `PCM` | `0xFF0000`–`0xFF7FFF` | la memoria de sonido del RF5C164, respondida en direcciones impares |
+| `GATE_ARRAY` | `0xFF8000` | los registros del ASIC |
+
+### El ASIC, el chip de sonido y sus nombres
+
+Una sola tabla de registros sirve a las dos vistas, a doble del índice de palabra contando desde la base
+del bloque: `0xA12000` para la consola, `0xFF8000` para la unidad.
+
+| Dirección | Registro |
+| --- | --- |
+| `+0x00` | `GA_SUB_CPU_CTRL`, `GA_MEM_MODE`, `GA_CDC_CTRL`, `GA_CDC_REG_DATA`, `GA_CDC_HOST_DATA`, `GA_CDC_DMA_ADDR`, `GA_STOP_WATCH`, `GA_COMM_FLAG` |
+| `+0x10` | `GA_COMM_CMD0`…`GA_COMM_CMD7` — las palabras que la consola pone delante de la unidad |
+| `+0x20` | `GA_COMM_STATUS0`…`GA_COMM_STATUS7` — las palabras con las que se le responde |
+| `+0x30` | `GA_TIMER`, `GA_INT_MASK`, `GA_CDD_FADER`, `GA_CDD_CTRL` |
+| `+0x38` | `GA_CDD_STATUS0`…`GA_CDD_STATUS4`, y después `GA_CDD_CMD0`…`GA_CDD_CMD4` |
+| `+0x4C` | `GA_FONT_COLOR`, `GA_FONT_BITS`, `GA_FONT_DATA0`…`GA_FONT_DATA3` |
+| `+0x100` | `GA_SUBCODE`, la cola de bytes de subcódigo leídos del disco; `GA_SUBCODE_MIRROR` marca la repetición del fichero entero en `+0x180` |
+
+Al chip de sonido solo llega la unidad, solo por direcciones de byte impares, y sus ocho canales comparten
+un juego de registros elegido por una escritura en el puerto de control: `PCM_CHANNEL_ENVELOPE`,
+`PCM_CHANNEL_PAN`, `PCM_CHANNEL_FREQ_LOW`, `PCM_CHANNEL_FREQ_HIGH`, `PCM_CHANNEL_LOOP_LOW`,
+`PCM_CHANNEL_LOOP_HIGH`, `PCM_CHANNEL_START` en `0xFF0001` hasta `0xFF000D`, y después `PCM_CONTROL` en
+`0xFF000F` y `PCM_CHANNEL_ENABLE` en `0xFF0011`. `PCM_WAVE_RAM` marca las muestras por encima de ellos, en
+`0xFF2001`.
+
+### Lo que el cargador nombra en cualquiera de las dos vistas
+
+- **La cabecera del disco** no se coloca en memoria —es el sector que lee la etapa de arranque antes de
+  que exista ningún programa—, pero toda su placa de texto va al comentario de cada bloque de programa que
+  describe, y al registro de la importación.
+- **Las rutinas que el programa de la unidad anuncia**: sus primeros 16 bytes son la marca del procesador
+  en el que corre (`MAIN-SUBCPU` para la unidad), la palabra en `0x18` da el desplazamiento de una tabla de
+  palabras, y cada una de esas es el desplazamiento de una rutina. Las tres primeras se convierten en
+  `DISC_init`, `DISC_main` y `DISC_int2`, las siguientes en `DISC_usercall1`, `DISC_usercall2` y así, y cada
+  una se desensambla.
+- **Las entradas de la etapa de arranque** se etiquetan donde las pone el hardware, en la RAM de programa
+  baja para la unidad (`bios_common_work` en `0x5E80`, y luego `_setjmptbl`, `_waitvsync`, `_buram`,
+  `_cdboot`, `_cdbios`, `_usercall0`–`_usercall3`, `_adrerr`, `_coderr`, `_diverr`, `_chkerr`, `_trperr`,
+  `_spverr`, `_trace`, `_nocod0`, `_nocod1` y `_slevel1`–`_slevel3` hasta `0x5F82`) y en la ROM de arranque
+  para la consola, cuando se dio su fichero: las entradas `_bios_*` de `0x280` a `0x368`, que es cómo una
+  llamada de la interfaz de programación de aplicaciones del CD se convierte en un nombre del listado.
+- **`-loader-verify`** informa de un primer sector que no abre con `SEGADISCSYSTEM`, de un programa de la
+  unidad declarado dentro del propio sector de cabecera o más allá de lo que el disco guarda, y del par de
+  la cabecera que no coincide con el sitio fijo del que lee la consola. Ninguno de ellos aborta la
+  importación.
+
 ## Opciones de importación
 
 Cada elección es una opción real del cargador. Aparece en el diálogo de importación con el valor que se
@@ -200,10 +320,15 @@ interacción.
 | --- | --- | --- | --- | --- |
 | Genesis | `-loader-32x` | Create Sega 32X segments | activada en un cartucho de 32X o una carga SH-2, desactivada en lo demás | los bloques y registros del 32X de arriba |
 | Genesis | `-loader-sega-cd` | Create Sega CD (EPA) segment | desactivada | la ventana `EPA` de `0x400000` |
-| los dos | `-loader-hw-registers` | Create hardware register blocks | activada | `Z80`, `SYS*`, `FDC`, `TIME`, `TMSS`, `VDP`, `RAM` y su espejo, o los bloques `VDP`, `PSG`, `CONTROLLER`, `IO_CONTROL` y `MAPPER` de las máquinas de 8 bits |
-| los dos | `-loader-verify` | Verify the ROM header | activada | las comprobaciones de [Verificación de la cabecera](#verificación-de-la-cabecera) |
+| todos | `-loader-hw-registers` | Create hardware register blocks | activada | `Z80`, `SYS*`, `FDC`, `TIME`, `TMSS`, `VDP`, `RAM` y su espejo, los bloques `VDP`, `PSG`, `CONTROLLER`, `IO_CONTROL` y `MAPPER` de las máquinas de 8 bits, o los registros del `GATE_ARRAY` y de sonido de un disco |
+| todos | `-loader-verify` | Verify the ROM header | activada | las comprobaciones de [Verificación de la cabecera](#verificación-de-la-cabecera) |
 | Genesis | `-loader-sram-file <ruta>` | Backup RAM contents file (.srm / .sram) | vacía | rellena `BACKUP_RAM` con un fichero de partida guardada |
 | SMS / GG | `-loader-cart-ram-file <ruta>` | Cartridge RAM contents file (.sav / .sms) | vacía | rellena la superposición `CART_RAM` de `0x8000` con un fichero de partida guardada |
+| Sega CD | `-loader-cd-bios <ruta>` | CD BIOS image the console runs before the disc (.bin) | vacía | rellena `BIOS_ROM` y su alias en la vista de la consola |
+| Sega CD | `-loader-cd-bram <ruta>` | Backup RAM contents file (.brm / .bkr) | vacía | rellena `BACKUP_RAM` en la vista de la unidad, repartido por las direcciones impares de su ventana |
+
+Las dos opciones de fichero de un disco se comprueban en la importación, y una ruta que no es un fichero
+para la importación con el motivo en vez de cargar media máquina.
 
 ```bash
 analyzeHeadless /tmp/proj nombre -import game.bin -loader SegaLoader \
@@ -212,6 +337,12 @@ analyzeHeadless /tmp/proj nombre -import game.bin -loader SegaLoader \
 
 analyzeHeadless /tmp/proj nombre -import game.sms -loader SegaSmsLoader \
     -loader-hw-registers true -loader-verify true
+
+analyzeHeadless /tmp/proj nombre -import game.cue -loader SegaCdMainLoader \
+    -loader-cd-bios bios_CD_E.bin -loader-hw-registers true -loader-verify true
+
+analyzeHeadless /tmp/proj nombre -import game.cue -loader SegaCdSubLoader \
+    -loader-cd-bram guardado.brm -loader-hw-registers true
 ```
 
 El tamaño de la partida guardada no tiene por qué coincidir con el que declara la cabecera. El bloque se
@@ -240,6 +371,11 @@ también cuando el fichero es más corto que una página.
 Para una imagen de Master System o Game Gear la misma opción compara el tamaño que implica el nibble de
 región con el fichero, y las dos reglas de checksum que usan esos cartuchos; las dos están explicadas en
 [Cabecera y puntos de entrada](#cabecera-y-puntos-de-entrada).
+
+Para un disco Sega CD comprueba la firma del primer sector y la zona de programa que la cabecera declara
+para la unidad, e informa del par del que no lee; eso está explicado en
+[Lo que el cargador nombra en cualquiera de las dos vistas](#lo-que-el-cargador-nombra-en-cualquiera-de-las-dos-vistas).
+Un disco no lleva ningún checksum que verificar.
 
 ```bash
 analyzeHeadless /tmp/proj nombre -process game.bin -noanalysis \
@@ -355,8 +491,10 @@ analyzeHeadless /tmp/proj nombre -process game.bin -noanalysis \
 - Ghidra **12.1.4**, la versión cuya API de cargadores implementa este módulo. Objetivos: cualquier
   imagen cuya cabecera diga `SEGA`, lo que cubre cartuchos de Mega Drive / Genesis, cartuchos de 32X en
   cualquiera de las dos arquitecturas, e imágenes lo bastante largas para llevar una zona de programa de
-  Sega CD; y cualquier imagen que lleve la cabecera de cartucho `TMR SEGA` de un juego de Master System o
-  Game Gear.
+  Sega CD; cualquier imagen que lleve la cabecera de cartucho `TMR SEGA` de un juego de Master System o
+  Game Gear; y un disco Sega CD, como una pista de sectores de 2048 o 2352 bytes, o como la hoja `.cue`
+  que describe una. La BIOS de la unidad y la partida guardada de un disco son ficheros aparte, dados por
+  las opciones de [Opciones de importación](#opciones-de-importación).
 - Un JDK, para compilar. Ghidra 12.1.4 apunta a Java 21, y el módulo se compila para esa versión.
 - BlastEm, solo para el desensamblado en vivo. La ventana lo arranca como proceso hijo, así que necesita
   una pantalla que el emulador pueda abrir.
@@ -422,9 +560,18 @@ build.gradle             compilación del módulo
 ## Límites conocidos
 
 - Las imágenes de SG-1000 y SC-3000 todavía no se reconocen: sus cartuchos no llevan cabecera, así que un
-  cargador para ellos habría que elegirlo a mano y darle el tamaño de la imagen. El soporte de Sega CD se
-  limita a la ventana `EPA` de una imagen de cartucho larga: las zonas de programa del CD que describe una
-  pista `.cue` o `.bin` no se interpretan.
+  cargador para ellos habría que elegirlo a mano y darle el tamaño de la imagen.
+- De un disco Sega CD el cargador lee el sector de cabecera y los dos programas que la cabecera coloca, que
+  es hasta donde llega la propia etapa de arranque antes de que haya un juego en memoria. Todo lo que viene
+  después —los datos de un juego, y el resto de lo que su primer programa pide a la unidad mientras
+  corre— se queda en el disco hasta que la traza en vivo lo alcanza. Un disco que además lleve un programa
+  de Sega 32X recibe el mapa de la consola sin la parte del 32X, porque el 32X de un disco así no está en
+  lo que la cabecera señala.
+- De una hoja `.cue` solo se lee su primera pista `MODE1`, y el volcado que esa pista nombra tiene que estar
+  junto a la hoja. Una pista de audio no lleva nada que ejecute un procesador, y un volcado de un modo
+  distinto de `MODE1` no tiene zona de programa.
+- La traza en vivo de un disco es la de un procesador: BlastEm escribe las direcciones del núcleo propio de
+  la unidad en un segundo log, `address_sub.log`, que la ventana todavía no lee.
 - En Master System y Game Gear la traza en vivo es imposible, no está sin terminar: BlastEm no registra
   direcciones de su Z80. Sobre esas imágenes usa `SegaIngestAddressLog` y los analizadores, y juega con el
   emulador como siempre.
@@ -464,5 +611,9 @@ build.gradle             compilación del módulo
 - Las funciones de la tabla de vectores solo se crean donde el vector alcanza código ejecutable.
 - Un cargador de Master System y Game Gear: la cabecera `TMR SEGA`, las ventanas paginadas del cartucho,
   los registros del mapper, los puertos de la consola y las reglas de checksum que usan esos cartuchos.
+- Los cargadores de los dos procesadores de un disco Sega CD: el disco y su hoja leídos por los programas
+  que declara la cabecera, el espacio de direcciones de cada procesador como lo enseña el ASIC, los
+  nombres del `GATE_ARRAY`, de la memoria de sonido y de la RAM con pila, y las entradas de la etapa de
+  arranque etiquetadas.
 - El plugin `BlastEm Live`, el lector del log y los comandos de ingesta por lote que hay detrás, y
   `SegaIngestAddressLog` para trabajar sin el emulador delante.

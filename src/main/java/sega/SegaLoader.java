@@ -389,58 +389,7 @@ public class SegaLoader extends AbstractProgramLoader {
 		}
 
 		private void createHardwareRegisters() {
-
-			memBlock("Z80", 0xA00000L, 0x10000L, true, true, false, false);
-			createNamedData(0xA04000L, "Z80_YM2612", DWordDataType.dataType);
-
-			memBlock("SYS1", 0xA10000L, 16 * 2, true, true, false, true);
-			createNamedData(0xA10000L, "IO_PCBVER", WordDataType.dataType);
-			createNamedData(0xA10002L, "IO_CT1_DATA", WordDataType.dataType);
-			createNamedData(0xA10004L, "IO_CT2_DATA", WordDataType.dataType);
-			createNamedData(0xA10006L, "IO_EXT_DATA", WordDataType.dataType);
-			createNamedData(0xA10008L, "IO_CT1_CTRL", WordDataType.dataType);
-			createNamedData(0xA1000AL, "IO_CT2_CTRL", WordDataType.dataType);
-			createNamedData(0xA1000CL, "IO_EXT_CTRL", WordDataType.dataType);
-			createNamedData(0xA1000EL, "IO_CT1_RX", WordDataType.dataType);
-			createNamedData(0xA10010L, "IO_CT1_TX", WordDataType.dataType);
-			createNamedData(0xA10012L, "IO_CT1_SMODE", WordDataType.dataType);
-			createNamedData(0xA10014L, "IO_CT2_RX", WordDataType.dataType);
-			createNamedData(0xA10016L, "IO_CT2_TX", WordDataType.dataType);
-			createNamedData(0xA10018L, "IO_CT2_SMODE", WordDataType.dataType);
-			createNamedData(0xA1001AL, "IO_EXT_RX", WordDataType.dataType);
-			createNamedData(0xA1001CL, "IO_EXT_TX", WordDataType.dataType);
-			createNamedData(0xA1001EL, "IO_EXT_SMODE", WordDataType.dataType);
-
-			memBlock("SYS2", 0xA11000L, 2, true, true, false, true);
-			createNamedData(0xA11000L, "IO_RAMMODE", WordDataType.dataType);
-
-			memBlock("Z802", 0xA11100L, 2, true, true, false, true);
-			createNamedData(0xA11100L, "IO_Z80BUS", WordDataType.dataType);
-
-			memBlock("Z803", 0xA11200L, 2, true, true, false, true);
-			createNamedData(0xA11200L, "IO_Z80RES", WordDataType.dataType);
-
-			memBlock("FDC", 0xA12000L, 0x100, true, true, false, true);
-			createNamedArray(0xA12000L, "IO_FDC", 0x100, ByteDataType.dataType);
-
-			// The last bytes of the timer region belong to the 32X bank register and 32X ID
-			int timeSegmentSize = has32XSegments ? 0xEC : 0x100;
-			memBlock("TIME", 0xA13000L, timeSegmentSize, true, true, false, true);
-			createNamedArray(0xA13000L, "IO_TIME", timeSegmentSize, ByteDataType.dataType);
-
-			memBlock("TMSS", 0xA14000L, 4, true, true, false, true);
-			createNamedData(0xA14000L, "IO_TMSS", DWordDataType.dataType);
-
-			memBlock("VDP", 0xC00000L, 2 * 9, true, true, false, true);
-			createNamedData(0xC00000L, "VDP_DATA", WordDataType.dataType);
-			createNamedData(0xC00002L, "VDP__DATA", WordDataType.dataType);
-			createNamedData(0xC00004L, "VDP_CTRL", WordDataType.dataType);
-			createNamedData(0xC00006L, "VDP__CTRL", WordDataType.dataType);
-			createNamedData(0xC00008L, "VDP_CNTR", WordDataType.dataType);
-			createNamedData(0xC0000AL, "VDP__CNTR", WordDataType.dataType);
-			createNamedData(0xC0000CL, "VDP___CNTR", WordDataType.dataType);
-			createNamedData(0xC0000EL, "VDP____CNTR", WordDataType.dataType);
-			createNamedData(0xC00011L, "VDP_PSG", ByteDataType.dataType);
+			MegaDriveRegisters.create(program, fpa, log, LOADER_NAME, has32XSegments, false);
 
 			memBlock("RAM", 0xFF0000L, 0x10000L, true, true, true, false);
 			mirrorBlock("RAM", 0xFF0000L, 0xFFFF0000L, 0x10000L);

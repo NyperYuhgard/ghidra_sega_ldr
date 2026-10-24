@@ -1,10 +1,10 @@
 # Sega Loader for Ghidra
 
-Ghidra loaders and analysis module for Sega cartridge images: Mega Drive / Genesis and Sega 32X, with
-room for the Sega CD program window when an image carries one, and Master System and Game Gear. Each
-one rebuilds the console's address space from the ROM header, names the hardware registers, applies the
-header and vector-table structures, and can disassemble the program while the code is actually executed
-in the BlastEm emulator.
+Ghidra loaders and analysis module for Sega cartridge and disc images: Mega Drive / Genesis and Sega
+32X, with room for the Sega CD program window when an image carries one, Master System and Game Gear,
+and the two 68000 processors of a Sega CD disc. Each one rebuilds the console's address space from the
+ROM or disc header, names the hardware registers, applies the header and vector-table structures, and
+can disassemble the program while the code is actually executed in the BlastEm emulator.
 
 Based on the original loader by **Dr. MefistO** ([lab313ru/ghidra_sega_ldr](https://github.com/lab313ru/ghidra_sega_ldr));
 see [Credits](#credits) for authorship and for what this fork changes.
@@ -17,6 +17,7 @@ see [Credits](#credits) for authorship and for what this fork changes.
 
 - [What the loader builds](#what-the-loader-builds)
 - [Master System and Game Gear](#master-system-and-game-gear)
+- [Sega CD](#sega-cd)
 - [Import options](#import-options)
 - [Header verification](#header-verification)
 - [Analyzer: negative offset variables](#analyzer-negative-offset-variables)
@@ -35,17 +36,21 @@ see [Credits](#credits) for authorship and for what this fork changes.
 
 ## What the loader builds
 
-The module installs one loader per family: the executable format recorded in a program is the loader's
-name, and each console needs its own language and address space.
+The module installs one loader per family, and one per processor where a machine runs two: the
+executable format recorded in a program is the loader's name, and each console needs its own language
+and address space.
 
 | Loader | Recognising a target | Language |
 | --- | --- | --- |
 | `SegaLoader` — *Sega Mega Drive / Genesis Loader* | `SEGA` at `0x100` | `68000:BE:32:MC68020` |
 | | a 32X cartridge additionally carries `MARS CHECK MODE` at `0x3C0`, and is offered a second time | `SuperH:BE:32:SH-2` |
 | `SegaSmsLoader` — *Sega Master System / Game Gear Loader* | `TMR SEGA` at `0x7FF0`, else at `0x3FF0`, else at `0x1FF0` | `z80:LE:16:default` |
+| `SegaCdMainLoader` — *Sega CD Loader (Main 68000)* | `SEGADISCSYSTEM` at `0x0` or `0x10` of an image, or a `.cue` sheet whose dump carries it | `68000:BE:32:MC68020` |
+| `SegaCdSubLoader` — *Sega CD Loader (Sub 68000)* | the same disc, and has to be asked for by name | `68000:BE:32:MC68020` |
 
 Everything under this heading is created during import, before any analysis runs, and covers the 68000
-machines. The 8-bit ones have their own section: [Master System and Game Gear](#master-system-and-game-gear).
+machines. The 8-bit ones have their own section: [Master System and Game Gear](#master-system-and-game-gear),
+and so does the disc: [Sega CD](#sega-cd).
 
 ### Cartridge and system memory
 
@@ -71,7 +76,7 @@ documentation and the labels homebrew toolchains use for the same registers.
 | `SYS2` | `0xA11000` | `IO_RAMMODE` |
 | `Z802` | `0xA11100` | `IO_Z80BUS` |
 | `Z803` | `0xA11200` | `IO_Z80RES` |
-| `FDC` | `0xA12000` | `IO_FDC` (0x100 bytes) |
+| `FDC` | `0xA12000` | `IO_FDC` (0x100 bytes); left out for a Sega CD disc, whose ASIC answers there instead |
 | `TIME` | `0xA13000` | `IO_TIME` (0x100 bytes, or 0xEC when 32X segments are present so that `0xA130EC` stays with the 32X) |
 | `TMSS` | `0xA14000` | `IO_TMSS` |
 | `VDP` | `0xC00000` | `VDP_DATA`, `VDP__DATA`, `VDP_CTRL`, `VDP__CTRL`, `VDP_CNTR`, `VDP__CNTR`, `VDP___CNTR`, `VDP____CNTR`, `VDP_PSG` |
@@ -181,6 +186,115 @@ to `0x0000`, `0x4000` and `0x8000` instead of `0xFFFC`–`0xFFFF`. Both are repo
 import: only the export Master System BIOS refuses to start a game whose checksum does not match, so a
 Game Gear or Japanese image often carries a field the console never reads.
 
+## Sega CD
+
+A disc is two programs on two 68000 processors that reach the same memories through one ASIC, and each
+of them sees those memories at a different address. So a disc gets two views, and the loader an import
+names is what chooses between them.
+
+### Two loaders, one disc
+
+| View | Loader | What it is given |
+| --- | --- | --- |
+| the console | `SegaCdMainLoader` — *Sega CD Loader (Main 68000)* | the CD boot ROM where a cartridge would sit, program RAM through the window the console reaches, the word RAM and the cell image, the port region with the ASIC in it, and the work RAM with the program that booted with the disc |
+| the drive | `SegaCdSubLoader` — *Sega CD Loader (Sub 68000)* | all 512 KiB of program RAM with the disc's own program in it, the word RAM through both of its windows, the battery RAM, the sound memory, and the ASIC at the top of the address space |
+
+An import that names no loader lands in the view of the processor the console runs, because that is the
+one a program of the disc is written for. The drive's own view is asked for with
+`-loader SegaCdSubLoader`, or picked from the loader list of the import dialog. One program in Ghidra is
+one processor, so both views of one disc mean importing the image twice.
+
+### The disc, and what is read from it
+
+An image is accepted when its first bytes, or the bytes sixteen past them, are `SEGADISCSYSTEM`: a track
+of 2048-byte sectors, or a raw dump of 2352-byte ones. A `.cue` sheet is accepted too: its first `MODE1`
+track names the dump to read and the sector its program area starts on, which is what places the reads.
+
+What the loader takes out of the disc is small and fixed:
+
+- the **first sector**, `0x800` bytes of header, read for its device and region fields, its version, its
+  release date and its two program areas;
+- the **program of the drive**, from the disc address and length of the first pair (`0x40` and `0x44`),
+  placed where that processor runs it;
+- the **program of the console**, which is not a promise the disc makes: the boot stage always takes
+  1.5 KiB from `0x200` of the disc and puts them at the bottom of the work RAM, where they then ask the
+  drive for the rest of the game.
+
+The second pair of the header (`0x48` and `0x4c`) is read and reported; no sheet makes the console read
+from where it says, so a disc that fills it with something else is told about and believed no further.
+
+### Cartridge-side view
+
+| Block | Address | Content |
+| --- | --- | --- |
+| `BIOS_ROM` | `0x000000`–`0x01FFFF` | the boot ROM, 128 KiB; bytes from `-loader-cd-bios`, a hole of the same size without them |
+| `BIOS_ROM` | `0x040000`–`0x05FFFF` | the alias of the same ROM, only when its bytes were given |
+| `PROGRAM_RAM` | `0x020000`–`0x025FFF` | the low program RAM through the window this processor is given |
+| `DISC_PROGRAM` | `0x026000` + | the program of the drive, the same bytes the drive's own view shows |
+| `PROGRAM_RAM_FREE` | … – `0x03FFFF` | the rest of that window |
+| `WORD_RAM` | `0x200000`–`0x21FFFF` | 128 KiB of the ASIC's word RAM, the bank the gate array selects |
+| `CELL_IMAGE` | `0x220000`–`0x23FFFF` | the window of that RAM the ASIC draws its on screen font from |
+| `GATE_ARRAY` | `0xA12000` | the ASIC registers, where a cartridge gives a floppy controller |
+| `BOOT_PROGRAM` | `0xFF0000`–`0xFF05FF` | the program that booted with the disc, and `BOOT_entry` at its first byte |
+| `WORK_RAM_FREE` | `0xFF0600`–`0xFFFFFF` | the work RAM past it |
+
+The Genesis blocks of [Hardware registers](#hardware-registers) arrive with this view — `Z80`, `SYS1`,
+`SYS2`, `Z802`, `Z803`, `TIME`, `TMSS`, `VDP` — except `FDC`, whose address the ASIC holds.
+
+### Drive-side view
+
+| Block | Address | Content |
+| --- | --- | --- |
+| `PROGRAM_RAM` | `0x000000`–`0x005FFF` | the low program RAM, where the boot stage keeps this processor's vectors and workspace |
+| `DISC_PROGRAM` | `0x006000` + | the program of the disc, from the address its header declares |
+| `PROGRAM_RAM_FREE` | … – `0x07FFFF` | the rest of the 512 KiB this processor holds |
+| `WORD_RAM` | `0x080000`–`0x0BFFFF` | 256 KiB, the whole of the ASIC's word RAM |
+| `WORD_RAM_1M` | `0x0C0000`–`0x0DFFFF` | the same RAM through the window that shows only its first half |
+| `BACKUP_RAM` | `0xFE0000`– | 8 KiB of battery RAM, answered on the odd addresses of a 64 KiB window; bytes from `-loader-cd-bram` |
+| `BACKUP_RAM_FREE` | … – `0xFEFFFF` | the rest of that window, when the save does not fill it |
+| `PCM` | `0xFF0000`–`0xFF7FFF` | the sound memory of the RF5C164, answered on odd addresses |
+| `GATE_ARRAY` | `0xFF8000` | the ASIC registers |
+
+### The ASIC, the sound chip and their names
+
+One table of registers serves both views, at the word index times two from the base of the block:
+`0xA12000` for the console, `0xFF8000` for the drive.
+
+| Address | Register |
+| --- | --- |
+| `+0x00` | `GA_SUB_CPU_CTRL`, `GA_MEM_MODE`, `GA_CDC_CTRL`, `GA_CDC_REG_DATA`, `GA_CDC_HOST_DATA`, `GA_CDC_DMA_ADDR`, `GA_STOP_WATCH`, `GA_COMM_FLAG` |
+| `+0x10` | `GA_COMM_CMD0`…`GA_COMM_CMD7` — the words the console puts in front of the drive |
+| `+0x20` | `GA_COMM_STATUS0`…`GA_COMM_STATUS7` — the words it is answered with |
+| `+0x30` | `GA_TIMER`, `GA_INT_MASK`, `GA_CDD_FADER`, `GA_CDD_CTRL` |
+| `+0x38` | `GA_CDD_STATUS0`…`GA_CDD_STATUS4`, then `GA_CDD_CMD0`…`GA_CDD_CMD4` |
+| `+0x4C` | `GA_FONT_COLOR`, `GA_FONT_BITS`, `GA_FONT_DATA0`…`GA_FONT_DATA3` |
+| `+0x100` | `GA_SUBCODE`, the queue of subcode bytes read off the disc; `GA_SUBCODE_MIRROR` marks the repeat of the whole file at `+0x180` |
+
+The sound chip is reached only by the drive, only on odd byte addresses, and its eight channels share one
+set of registers chosen by a write to the control port: `PCM_CHANNEL_ENVELOPE`, `PCM_CHANNEL_PAN`,
+`PCM_CHANNEL_FREQ_LOW`, `PCM_CHANNEL_FREQ_HIGH`, `PCM_CHANNEL_LOOP_LOW`, `PCM_CHANNEL_LOOP_HIGH`,
+`PCM_CHANNEL_START` at `0xFF0001` through `0xFF000D`, then `PCM_CONTROL` at `0xFF000F` and
+`PCM_CHANNEL_ENABLE` at `0xFF0011`. `PCM_WAVE_RAM` marks the samples above them, at `0xFF2001`.
+
+### What the loader names in either view
+
+- **The header of the disc** is not placed in memory — it is the sector the boot stage reads before any
+  program exists — but its whole text plate goes into the comment of every program block it describes,
+  and into the import log.
+- **The routines the drive's program announces**: its first 16 bytes are the marker of the processor it
+  runs on (`MAIN-SUBCPU` for the drive), the word at `0x18` gives the offset of a table of words, and
+  each of those is the offset of a routine. The first three become `DISC_init`, `DISC_main` and
+  `DISC_int2`, the ones after `DISC_usercall1`, `DISC_usercall2` and so on, and each is disassembled.
+- **The entries of the boot stage** are labelled where the hardware puts them, in the low program RAM for
+  the drive (`bios_common_work` at `0x5E80`, then `_setjmptbl`, `_waitvsync`, `_buram`, `_cdboot`,
+  `_cdbios`, `_usercall0`–`_usercall3`, `_adrerr`, `_coderr`, `_diverr`, `_chkerr`, `_trperr`, `_spverr`,
+  `_trace`, `_nocod0`, `_nocod1` and `_slevel1`–`_slevel3` up to `0x5F82`) and in the boot ROM for the
+  console, when its file was given: the `_bios_*` entries from `0x280` to `0x368`, which is how a call of
+  the CD application programming interface becomes a name in the listing.
+- **`-loader-verify`** reports a first sector that does not open with `SEGADISCSYSTEM`, a program of the
+  drive declared inside the header sector or past what the disc holds, and the pair of the header that
+  disagrees with the fixed place the console reads from. None of them aborts the import.
+
 ## Import options
 
 Every choice is a real loader option. It appears in the import dialog with the value shown here and
@@ -190,10 +304,15 @@ can be set from a command line, so an import needs no interaction at all.
 | --- | --- | --- | --- | --- |
 | Genesis | `-loader-32x` | Create Sega 32X segments | on for a 32X cartridge or an SH-2 load, off otherwise | the 32X blocks and registers above |
 | Genesis | `-loader-sega-cd` | Create Sega CD (EPA) segment | off | the `EPA` window at `0x400000` |
-| both | `-loader-hw-registers` | Create hardware register blocks | on | `Z80`, `SYS*`, `FDC`, `TIME`, `TMSS`, `VDP`, `RAM` and its mirror, or the `VDP`, `PSG`, `CONTROLLER`, `IO_CONTROL` and `MAPPER` blocks of the 8-bit machines |
-| both | `-loader-verify` | Verify the ROM header | on | the checks in [Header verification](#header-verification) |
+| all | `-loader-hw-registers` | Create hardware register blocks | on | `Z80`, `SYS*`, `FDC`, `TIME`, `TMSS`, `VDP`, `RAM` and its mirror, the `VDP`, `PSG`, `CONTROLLER`, `IO_CONTROL` and `MAPPER` blocks of the 8-bit machines, or the `GATE_ARRAY` and sound registers of a disc |
+| all | `-loader-verify` | Verify the ROM header | on | the checks in [Header verification](#header-verification) |
 | Genesis | `-loader-sram-file <path>` | Backup RAM contents file (.srm / .sram) | empty | fills `BACKUP_RAM` from a save file |
 | SMS / GG | `-loader-cart-ram-file <path>` | Cartridge RAM contents file (.sav / .sms) | empty | fills the `CART_RAM` overlay of `0x8000` from a save file |
+| Sega CD | `-loader-cd-bios <path>` | CD BIOS image the console runs before the disc (.bin) | empty | fills `BIOS_ROM` and its alias in the console's view |
+| Sega CD | `-loader-cd-bram <path>` | Backup RAM contents file (.brm / .bkr) | empty | fills `BACKUP_RAM` in the drive's view, spread over the odd addresses of its window |
+
+Both of the file options of a disc are checked at import time, and a path that is not a file stops the
+import with the reason rather than loading half a machine.
 
 ```bash
 analyzeHeadless /tmp/proj name -import game.bin -loader SegaLoader \
@@ -202,6 +321,12 @@ analyzeHeadless /tmp/proj name -import game.bin -loader SegaLoader \
 
 analyzeHeadless /tmp/proj name -import game.sms -loader SegaSmsLoader \
     -loader-hw-registers true -loader-verify true
+
+analyzeHeadless /tmp/proj name -import game.cue -loader SegaCdMainLoader \
+    -loader-cd-bios bios_CD_E.bin -loader-hw-registers true -loader-verify true
+
+analyzeHeadless /tmp/proj name -import game.cue -loader SegaCdSubLoader \
+    -loader-cd-bram save.brm -loader-hw-registers true
 ```
 
 The size of a save does not have to match the size the header declares. The block is created at the
@@ -228,6 +353,11 @@ window, so the `CART_RAM` block is an overlay whether or not the file is shorter
 For a Master System or Game Gear image the same option compares the size implied by the region
 nibble with the file, and the two checksum rules those cartridges use; both are described in
 [Header and entry points](#header-and-entry-points).
+
+For a Sega CD disc it checks the signature of the first sector and the program area the header declares
+for the drive, and reports the pair it does not read from; those are described in
+[What the loader names in either view](#what-the-loader-names-in-either-view). A disc carries no
+checksum to verify.
 
 ```bash
 analyzeHeadless /tmp/proj name -process game.bin -noanalysis \
@@ -339,8 +469,11 @@ analyzeHeadless /tmp/proj name -process game.bin -noanalysis \
 
 - Ghidra **12.1.4**, the version whose loader API this module implements. Targets: any image whose
   header says `SEGA`, which covers Mega Drive / Genesis cartridges, 32X cartridges in either
-  architecture, and images long enough to carry a Sega CD program region; and any image carrying the
-  `TMR SEGA` cartridge header of a Master System or Game Gear game.
+  architecture, and images long enough to carry a Sega CD program region; any image carrying the
+  `TMR SEGA` cartridge header of a Master System or Game Gear game; and a Sega CD disc, as a track of
+  2048 or 2352 byte sectors, or as the `.cue` sheet that describes one. The BIOS of the drive and the
+  save of a disc are separate files, given by the options of
+  [Import options](#import-options).
 - A JDK, for building. Ghidra 12.1.4 targets Java 21, and the module is compiled for that release.
 - BlastEm, only for live disassembly. The panel starts it as a child process, so it needs a display
   the emulator can open.
@@ -406,9 +539,18 @@ build.gradle             module build
 ## Known limits
 
 - SG-1000 and SC-3000 images are not recognized yet: their cartridges carry no header, so a loader
-  for them would have to be chosen by hand and given the size of the image. Sega CD support is limited
-  to the `EPA` window of a long cartridge image: the CD program areas described by a `.cue` or `.bin`
-  track are not parsed.
+  for them would have to be chosen by hand and given the size of the image.
+- Of a Sega CD disc the loader reads the header sector and the two programs the header places, which is
+  what the boot stage itself reaches before a game is in memory. Everything past that — the data of a
+  game, and the rest of what its first program asks the drive for while it runs — stays on the disc
+  until the live trace reaches it. A disc that also carries a Sega 32X program gets the map of the
+  console without the 32X side of it, because the 32X part of such a disc is not in what the header
+  points at.
+- Of a `.cue` sheet only the first `MODE1` track is read, and the track its dump names has to sit next
+  to the sheet. An audio track carries nothing a processor runs, and a dump of a mode other than
+  `MODE1` has no program area in it.
+- The live trace of a disc is one processor's: BlastEm writes the addresses of the drive's own core to
+  a second log, `address_sub.log`, which the panel does not read yet.
 - Master System and Game Gear tracing is impossible rather than unfinished: BlastEm logs no addresses
   for its Z80. Use `SegaIngestAddressLog` and the analyzers on those images, and play with the
   emulator as usual.
@@ -446,6 +588,9 @@ build.gradle             module build
 - Vector-table functions are only created where the vector reaches runnable code.
 - A loader for the Master System and Game Gear: the `TMR SEGA` header, the paged cartridge windows, the
   mapper registers, the console ports, and the checksum rules those cartridges use.
+- Loaders for the two processors of a Sega CD disc: the disc and its sheet read for the programs the
+  header declares, the address space of each processor as the ASIC shows it, the gate array, the sound
+  memory and the battery RAM named, and the entries of the boot stage labelled.
 - The `BlastEm Live` plugin, the log reader and the batched ingest commands behind it, and
   `SegaIngestAddressLog` for working offline.
 
