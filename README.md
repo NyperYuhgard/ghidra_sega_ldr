@@ -47,6 +47,7 @@ and address space.
 | `SegaSmsLoader` — *Sega Master System / Game Gear Loader* | `TMR SEGA` at `0x7FF0`, else at `0x3FF0`, else at `0x1FF0` | `z80:LE:16:default` |
 | `SegaCdMainLoader` — *Sega CD Loader (Main 68000)* | `SEGADISCSYSTEM` at `0x0` or `0x10` of an image, or a `.cue` sheet whose dump carries it | `68000:BE:32:MC68020` |
 | `SegaCdSubLoader` — *Sega CD Loader (Sub 68000)* | the same disc, and has to be asked for by name | `68000:BE:32:MC68020` |
+| `SegaCdMmdLoader` — *Sega CD Loader (Disc Member)* | one file of that disc's volume, which has to be named, with the address it is placed at | `68000:BE:32:MC68020` |
 
 Everything under this heading is created during import, before any analysis runs, and covers the 68000
 machines. The 8-bit ones have their own section: [Master System and Game Gear](#master-system-and-game-gear),
@@ -204,13 +205,22 @@ one a program of the disc is written for. The drive's own view is asked for with
 `-loader SegaCdSubLoader`, or picked from the loader list of the import dialog. One program in Ghidra is
 one processor, so both views of one disc mean importing the image twice.
 
+A third loader, `SegaCdMmdLoader`, makes a program of one *file* of the disc rather than of the disc: see
+[Disc members](#disc-members).
+
 ### The disc, and what is read from it
 
 An image is accepted when its first bytes, or the bytes sixteen past them, are `SEGADISCSYSTEM`: a track
-of 2048-byte sectors, or a raw dump of 2352-byte ones. A `.cue` sheet is accepted too: its first `MODE1`
-track names the dump to read and the sector its program area starts on, which is what places the reads.
+of 2048-byte sectors, or a raw dump of 2352-byte ones. A `.cue` sheet is accepted too, however the ripper
+headed it — a `CATALOG` number, a `REM` comment, a genre or a date may all come before anything else —
+and however it divides the disc: each `FILE` of stored bytes that the sheet names is opened, with the
+quoted names that carry spaces and parentheses, and the track whose dump holds the signature is the one
+that gets read. Its `INDEX 01` says where the track begins; when the bytes disagree with the sheet, the
+signature is what is believed and the import log says how far apart the two were. Tracks of audio are
+passed over, and so is a dump kept as a `MOTOROLA` sheet instead of stored bytes, which cannot be read one
+sector at a time.
 
-What the loader takes out of the disc is small and fixed:
+What the loader takes out of the disc is three things small and fixed, and one that is neither:
 
 - the **first sector**, `0x800` bytes of header, read for its device and region fields, its version, its
   release date and its two program areas;
@@ -218,10 +228,59 @@ What the loader takes out of the disc is small and fixed:
   placed where that processor runs it;
 - the **program of the console**, which is not a promise the disc makes: the boot stage always takes
   1.5 KiB from `0x200` of the disc and puts them at the bottom of the work RAM, where they then ask the
-  drive for the rest of the game.
+  drive for the rest of the game;
+- the **list of the files** the disc carries in its volume, which every import of a disc writes to its
+  log, sector and length of each, directories and all — see [Disc members](#disc-members).
 
-The second pair of the header (`0x48` and `0x4c`) is read and reported; no sheet makes the console read
-from where it says, so a disc that fills it with something else is told about and believed no further.
+The second pair of the header (`0x48` and `0x4c`) is read, and said out loud whenever it stands empty or
+holds a place other than that one: no sheet makes the console read from where it says, so a disc gets
+reported and believed no further.
+
+### Disc members
+
+Under its programs a Sega CD disc is an ISO-9660 volume, and inside that volume a game keeps small
+programs for the console's own 68000: the files named `.MMD` that it loads into RAM and runs, next to the
+`.BIN` data, the `.STM` streams and the `.TXT` of the same volume.
+
+`SegaCdMmdLoader` imports one of those files as a program of its own, on the map of the console — the
+blocks [Cartridge-side view](#cartridge-side-view) describes, so the references the member makes into the
+memories around it land on a name:
+
+```bash
+analyzeHeadless proj name -import game.cue -loader SegaCdMmdLoader \
+    -loader-cd-mmd ATTACK.MMD -loader-cd-mmd-address 0xFF2000
+```
+
+**The disc does not say where a member is loaded.** The head of a `.MMD` is not a table of vectors, and
+the addresses inside it name the work RAM, the word RAM, the cart and the drive all at once: nothing the
+disc holds fixes the place, so the address is asked for and the log says, in as many words, that the one
+it got is the one that was given. It is read as `ff2000`, `0xff2000` or `$ff2000`, and has to reach no
+further than `0xFFFFFF`. The name is matched the way a volume spells it: upper case, the `;1` left off,
+the extension only when nothing else answers to the same stem, and the directory in front of it when two
+files share a name.
+
+The dialog asks for the same thing, and the disc's own program is not where a member turns up: with the
+`.cue` chosen, switch **Format** from *Sega CD Loader (Main 68000)* to *Sega CD Loader (Disc Member)*
+and press `Options…`; the two fields it shows under *The member of the volume* answer for the disc —
+the name one opens on the files the volume holds, standing on the first `.MMD` of it, and the address
+one is what is left to type. Format first and `Options…` after: the dialog empties whatever was written
+as soon as the loader changes, and what was answered comes back for the next import of the same
+project. An import that names no file at all takes the one the box stands on, and says which in the
+log. A member is a program of its own, so a hundred files mean a hundred imports, and the names
+worth choosing are the ones every Sega CD import writes into its log. A file taken off the disc
+beforehand is not a way in: a `.MMD` carries nothing that says what it is, so it has to be read through
+the disc it came from.
+
+What arrives is a block named after the file with a function at its first byte, and every window of
+memory that held it is cut to the parts that are left — `WORK_RAM_FREE` becomes two blocks, say — so
+nothing is ever created on top of the member. A file is read up to 1 MiB and the length left out of that
+is reported. A member put on registers, at `0xA12000` for instance, is named with every block it reaches
+into and placed anyway, as an overlay: what an import was asked for is not for the loader to overrule.
+
+None of this reaches back into the disc imported before it, and it is not meant to: the work RAM of that
+map is created without bytes, because the disc says nothing about what a game carries there, and a
+listing of `??` over `WORK_RAM_FREE` is that said out loud. Bytes for those addresses come from the
+emulator's RAM, which no version of this module can hand over yet.
 
 ### Cartridge-side view
 
@@ -236,7 +295,7 @@ from where it says, so a disc that fills it with something else is told about an
 | `CELL_IMAGE` | `0x220000`–`0x23FFFF` | the window of that RAM the ASIC draws its on screen font from |
 | `GATE_ARRAY` | `0xA12000` | the ASIC registers, where a cartridge gives a floppy controller |
 | `BOOT_PROGRAM` | `0xFF0000`–`0xFF05FF` | the program that booted with the disc, and `BOOT_entry` at its first byte |
-| `WORK_RAM_FREE` | `0xFF0600`–`0xFFFFFF` | the work RAM past it |
+| `WORK_RAM_FREE` | `0xFF0600`–`0xFFFFFF` | the work RAM past it, in as many blocks as a member of the volume makes |
 
 The Genesis blocks of [Hardware registers](#hardware-registers) arrive with this view — `Z80`, `SYS1`,
 `SYS2`, `Z802`, `Z803`, `TIME`, `TMSS`, `VDP` — except `FDC`, whose address the ASIC holds.
@@ -281,19 +340,14 @@ set of registers chosen by a write to the control port: `PCM_CHANNEL_ENVELOPE`, 
 - **The header of the disc** is not placed in memory — it is the sector the boot stage reads before any
   program exists — but its whole text plate goes into the comment of every program block it describes,
   and into the import log.
-- **The routines the drive's program announces**: its first 16 bytes are the marker of the processor it
-  runs on (`MAIN-SUBCPU` for the drive), the word at `0x18` gives the offset of a table of words, and
-  each of those is the offset of a routine. The first three become `DISC_init`, `DISC_main` and
-  `DISC_int2`, the ones after `DISC_usercall1`, `DISC_usercall2` and so on, and each is disassembled.
 - **The entries of the boot stage** are labelled where the hardware puts them, in the low program RAM for
   the drive (`bios_common_work` at `0x5E80`, then `_setjmptbl`, `_waitvsync`, `_buram`, `_cdboot`,
   `_cdbios`, `_usercall0`–`_usercall3`, `_adrerr`, `_coderr`, `_diverr`, `_chkerr`, `_trperr`, `_spverr`,
   `_trace`, `_nocod0`, `_nocod1` and `_slevel1`–`_slevel3` up to `0x5F82`) and in the boot ROM for the
   console, when its file was given: the `_bios_*` entries from `0x280` to `0x368`, which is how a call of
   the CD application programming interface becomes a name in the listing.
-- **`-loader-verify`** reports a first sector that does not open with `SEGADISCSYSTEM`, a program of the
-  drive declared inside the header sector or past what the disc holds, and the pair of the header that
-  disagrees with the fixed place the console reads from. None of them aborts the import.
+- **`-loader-verify`** reports a first sector that does not open with `SEGADISCSYSTEM`, and a program of
+  the drive declared inside the header sector or past what the disc holds. None of them aborts the import.
 
 ## Import options
 
@@ -310,6 +364,8 @@ can be set from a command line, so an import needs no interaction at all.
 | SMS / GG | `-loader-cart-ram-file <path>` | Cartridge RAM contents file (.sav / .sms) | empty | fills the `CART_RAM` overlay of `0x8000` from a save file |
 | Sega CD | `-loader-cd-bios <path>` | CD BIOS image the console runs before the disc (.bin) | empty | fills `BIOS_ROM` and its alias in the console's view |
 | Sega CD | `-loader-cd-bram <path>` | Backup RAM contents file (.brm / .bkr) | empty | fills `BACKUP_RAM` in the drive's view, spread over the odd addresses of its window |
+| Disc member | `-loader-cd-mmd <name>` | Disc member to import (ISO-9660 name) | the first `.MMD` of the volume | the file of the volume to import; in the dialog it is a box holding the files the disc carries, and a name that is not one of them is answered with the list |
+| Disc member | `-loader-cd-mmd-address <address>` | Address the member is loaded at | empty | where those bytes are placed, `0xFF2000` for the work RAM; required, because no disc says it |
 
 Both of the file options of a disc are checked at import time, and a path that is not a file stops the
 import with the reason rather than loading half a machine.
@@ -377,9 +433,10 @@ default).
 ## Live disassembly with BlastEm
 
 The `BlastEm Live` plugin drives the emulator and turns what it runs into code in the program that
-is open, while the game plays. It relies on BlastEm's own `-l` switch: the emulator writes
-`address.log` in the folder it was started from, one hexadecimal address per 68000 block it
-translated. The plugin reads that file as it grows and disassembles each batch.
+is open, while the game plays. It relies on BlastEm's own `-l` switch: the emulator writes a trace in the
+folder it was started from, one hexadecimal address per 68000 block it translated — `address.log` for the
+processor of the cartridge, `address_sub.log` for the drive's own on a disc. The plugin reads that file as
+it grows and disassembles each batch.
 
 BlastEm instruments its 68000 cores and nothing else. The Z80 of the Master System, Game Gear, SG-1000
 and SC-3000 logs no addresses, and neither does the Sega media player (which has no CPU) or the NEC
@@ -397,21 +454,23 @@ addresses outside the memory map, and addresses in blocks that hold no bytes yet
 
 | Field | Meaning |
 | --- | --- |
-| `ROM` | the image the emulator runs; prefilled with the file this program was imported from, and the session refuses to start on any other |
+| `ROM` | the image the emulator runs; prefilled with the file this program was imported from — for a disc, with its `.cue` sheet rather than the track the program was built from, unless that sheet hands the disc over several files, which the panel does not start — and the session refuses to start on any other |
 | `BlastEm` | the emulator binary; prefilled with the first `blastem` found on the PATH |
 | `Machine` | the console to emulate, passed as `-m`; it starts on *Detect from the image* and the list, with what each one yields, is below |
 | `Disassemble` | how a batch of addresses becomes code; see below |
-| `Trace folder` | the directory BlastEm runs in, and therefore the one that holds `address.log` |
+| `Trace folder` | the directory BlastEm runs in, and therefore the one that holds the trace the panel reads |
 | `Extra args` | anything else for the emulator, split the way a shell splits it |
 | `RAM too` | also take the addresses that land in work or battery RAM; useful for patchers and routines the game loads into RAM, noisy otherwise |
 | `follow the PC` | move the listing cursor to the last address the emulator reached |
 | `pause` | keep the emulator running and keep counting, without touching the program |
 | `Start` / `Stop` | begin or end the session; Stop hands the analyzers everything the session made outside their queue |
-| `Ingest log…` | choose an `address.log` left behind by an earlier run and disassemble all of it |
+| `Ingest log…` | choose a trace left behind by an earlier run and disassemble all of it |
 
 The emulator is started as `blastem [-m machine] -l [extra args] <rom>` in the trace folder; the `-m`
-switch is left out on the first row of the list below. Stop terminates it, and so does closing the
-program, switching to another program, or leaving the tool, so no orphan process is left behind.
+switch is left out on the first row of the list below. The exact command is written to the panel log, and
+so is the exit code whenever the process dies before Stop is pressed. Stop terminates it, and so does
+closing the program, switching to another program, or leaving the tool, so no orphan process is left
+behind.
 
 | Machine (dialogue) | `-m` | Trace |
 | --- | --- | --- |
@@ -430,8 +489,17 @@ program, switching to another program, or leaving the tool, so no orphan process
 
 A Sega CD disc has no id of its own: BlastEm recognises it by the `SEGADISCSYSTEM` header, so the first
 row is the only way to reach it. Over a disc the main 68000 writes `address.log` and the sub CPU writes
-`address_sub.log`, and the panel reads the first one. Detection also tells Master System from Game Gear
-by the extension of the file, so keep a Game Gear image named `.gg`.
+`address_sub.log`, and the panel reads whichever one belongs to the view being filled — the drive's
+program is traced in the second, the console's in the first. A program built from a member of the volume
+is the console's too, and so is traced in `address.log`, the same one the disc's own boot program is
+filled from. The emulator needs the sheet, not the track dump the program was built from, and the `ROM`
+field holds the sheet already when the program came from one. Support of a Sega CD in this panel is
+experimental, though, and a sheet that hands the disc out over several files — the way a rip laid down for
+a burner does — is not started at all: `Start` stays dead and the log says why. Take the disc to a single
+image of its data track, an `.iso` made from the sheet, and point the field at that: BlastEm reads such an
+image by its `SEGADISCSYSTEM` header, and so does the loader. A trace of the split disc from a run made
+elsewhere still comes in through `Ingest log…`. Detection also tells Master System from
+Game Gear by the extension of the file, so keep a Game Gear image named `.gg`.
 
 The machine selection only feeds `-m`: the loader is what decides the language and the memory map of
 the program being filled, so what you run has to be the same console the program was imported as, and
@@ -541,16 +609,29 @@ build.gradle             module build
 - SG-1000 and SC-3000 images are not recognized yet: their cartridges carry no header, so a loader
   for them would have to be chosen by hand and given the size of the image.
 - Of a Sega CD disc the loader reads the header sector and the two programs the header places, which is
-  what the boot stage itself reaches before a game is in memory. Everything past that — the data of a
-  game, and the rest of what its first program asks the drive for while it runs — stays on the disc
-  until the live trace reaches it. A disc that also carries a Sega 32X program gets the map of the
-  console without the 32X side of it, because the 32X part of such a disc is not in what the header
-  points at.
-- Of a `.cue` sheet only the first `MODE1` track is read, and the track its dump names has to sit next
-  to the sheet. An audio track carries nothing a processor runs, and a dump of a mode other than
-  `MODE1` has no program area in it.
-- The live trace of a disc is one processor's: BlastEm writes the addresses of the drive's own core to
-  a second log, `address_sub.log`, which the panel does not read yet.
+  what the boot stage itself reaches before a game is in memory, and the list of files the volume of the
+  disc carries. Everything else stays on the disc until a member is imported by name or the live trace
+  reaches it. A disc that also carries a Sega 32X program gets the map of the console without the 32X
+  side of it, because the 32X part of such a disc is not in what the header points at.
+- The volume of a disc is looked for in the sectors of 2048 bytes that a mode 1 track gives: a disc whose
+  data is framed another way has no descriptor to find, and then the import says its files cannot be
+  listed and goes on exactly as it did before. A volume that carries a supplementary descriptor and no
+  primary one is reported and not walked. Files spread over more than one extent are listed and said of,
+  not stitched together, and names spelled with the escapes of another standard — Joliet — are listed as
+  they read.
+- A member of a volume is read up to 1 MiB, and where its address puts it is the importer's business: the
+  disc says nothing about it, and every log line about a member repeats that.
+- Of a `.cue` sheet the loader reads the one track that carries a program: whichever dump holds
+  `SEGADISCSYSTEM`, its own file or a file the whole disc shares, looked for next to the sheet. An audio
+  track carries nothing a processor runs, a dump of a mode other than `MODE1` has no program area in it,
+  and a `MOTOROLA` file is printed hexadecimal rather than stored bytes, so it cannot be read one sector
+  at a time. Neither mode 2 nor CD-XA framing is recognized.
+- The live trace of a disc is one processor's at a time: the panel follows the log written by the core the
+  open program is the view of, so both sides of one disc mean one session each.
+- Sega CD support in the live panel is experimental, and it does not run a disc whose `.cue` hands it over
+  several files: the panel leaves that sheet alone. Convert the disc to a single `.iso` of its data track,
+  import the `.iso` and start the session from it, or take a trace of the split disc made by a run
+  elsewhere through `Ingest log…`.
 - Master System and Game Gear tracing is impossible rather than unfinished: BlastEm logs no addresses
   for its Z80. Use `SegaIngestAddressLog` and the analyzers on those images, and play with the
   emulator as usual.
@@ -591,6 +672,10 @@ build.gradle             module build
 - Loaders for the two processors of a Sega CD disc: the disc and its sheet read for the programs the
   header declares, the address space of each processor as the ASIC shows it, the gate array, the sound
   memory and the battery RAM named, and the entries of the boot stage labelled.
+- The volume of files a disc carries is read as well: its descriptors are found, its directories walked,
+  and its files written into the log of every Sega CD import, so what is on the disc is known without
+  mounting it. A loader imports one of those files as a program of its own, with the map of the console
+  about it and the memory windows cut around it.
 - The `BlastEm Live` plugin, the log reader and the batched ingest commands behind it, and
   `SegaIngestAddressLog` for working offline.
 

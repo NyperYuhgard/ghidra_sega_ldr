@@ -106,6 +106,11 @@ public class BlastEmLivePlugin extends ProgramPlugin implements BlastEmLiveProvi
 			provider.log("Point the ROM field at the image BlastEm should run.");
 			return;
 		}
+		String refusal = DiscSheet.refusalFor(rom);
+		if (refusal != null) {
+			provider.log(refusal);
+			return;
+		}
 
 		try {
 			runner = new BlastEmRunner(settings.getWorkingDirectory());
@@ -121,7 +126,7 @@ public class BlastEmLivePlugin extends ProgramPlugin implements BlastEmLiveProvi
 		sessionMode = settings.getMode();
 		pendingAnalysis.clear();
 		String imported = currentProgram.getExecutablePath();
-		if (imported != null && !imported.equals(rom)) {
+		if (imported != null && !DiscSheet.sameDisc(imported, rom)) {
 			provider.log("Warning: this program came from " + imported + ", and BlastEm is being "
 				+ "pointed at " + rom + ". Addresses from the second image will be applied to the first.");
 		}
@@ -138,8 +143,10 @@ public class BlastEmLivePlugin extends ProgramPlugin implements BlastEmLiveProvi
 			runner = null;
 			return;
 		}
+		provider.log("Running: " + runner.getCommandLine());
 
-		reader = new BlastEmTraceReader(runner.traceFile(), this::offer, provider::log);
+		reader = new BlastEmTraceReader(runner.traceFile(DiscSheet.traceNameOf(session)), this::offer,
+			provider::log);
 		reader.startTail();
 		provider.setRunning(true);
 		provider.log("BlastEm is running; every block it translates becomes code.");

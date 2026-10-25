@@ -14,15 +14,17 @@ import java.util.function.Consumer;
 /**
  * The emulator process, and the directory its trace appears in.
  * <p>
- * BlastEm opens {@code address.log} in its working directory rather than on standard output, so
- * the directory is chosen before the process starts and the reader knows where to look.
+ * BlastEm opens its address log in its working directory rather than on standard output, so the
+ * directory is chosen before the process starts and the reader knows which file to look at.
  */
 public class BlastEmRunner {
 
-	private static final String TRACE_FILE = "address.log";
 	private static final long STOP_MILLIS = 2000;
 
 	private final Path workingDirectory;
+
+	/** What the emulator was asked to run, spelled the way a shell would take it. */
+	private String commandLine = "";
 
 	private Process process;
 
@@ -39,8 +41,9 @@ public class BlastEmRunner {
 		}
 	}
 
-	public File traceFile() {
-		return workingDirectory.resolve(TRACE_FILE).toFile();
+	/** The log of the trace BlastEm is keeping: a disc gives one to each of its two 68000. */
+	public File traceFile(String name) {
+		return workingDirectory.resolve(name).toFile();
 	}
 
 	public Path getWorkingDirectory() {
@@ -70,6 +73,7 @@ public class BlastEmRunner {
 			command.add(argument);
 		}
 		command.add(rom);
+		commandLine = shown(command);
 
 		ProcessBuilder builder = new ProcessBuilder(command);
 		builder.directory(workingDirectory.toFile());
@@ -77,6 +81,22 @@ public class BlastEmRunner {
 		process = builder.start();
 		process.getOutputStream().close();
 		pumpOutput(outputSink);
+	}
+
+	public String getCommandLine() {
+		return commandLine;
+	}
+
+	/** The command as it would be typed, with the paths of a disc between their quotes. */
+	private static String shown(List<String> command) {
+		StringBuilder text = new StringBuilder();
+		for (String part : command) {
+			if (text.length() > 0) {
+				text.append(' ');
+			}
+			text.append(part.contains(" ") ? "\"" + part + "\"" : part);
+		}
+		return text.toString();
 	}
 
 	/**

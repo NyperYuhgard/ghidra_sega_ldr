@@ -22,6 +22,8 @@ import javax.swing.JScrollPane;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.SwingUtilities;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 
 import docking.widgets.filechooser.GhidraFileChooser;
 import docking.widgets.filechooser.GhidraFileChooserMode;
@@ -92,6 +94,9 @@ public class BlastEmLiveProvider extends ComponentProviderAdapter {
 	private String selectedMachineId = "";
 	private IngestCommand.Mode selectedMode = IngestCommand.Mode.ANALYSIS_QUEUE;
 
+	/** Why the image in the ROM field is left unrun, or null when the panel may start it. */
+	private String refusal;
+
 	private JComponent component;
 
 	/** The panel keeps its own copy of these until the window is shown for the first time. */
@@ -126,6 +131,7 @@ public class BlastEmLiveProvider extends ComponentProviderAdapter {
 		romField.setText(romText);
 		countsLabel.setText(countsText);
 		setRunning(running);
+		checkImage();
 		for (String message : messages) {
 			logArea.append(message);
 			logArea.append("\n");
@@ -147,6 +153,24 @@ public class BlastEmLiveProvider extends ComponentProviderAdapter {
 		at.fill = GridBagConstraints.HORIZONTAL;
 
 		romField = new JTextField(24);
+		// Replacing the sheet with a single image of the disc is the way out of a refusal, so the
+		// answer is looked for as the field changes and not only when the session starts.
+		romField.getDocument().addDocumentListener(new DocumentListener() {
+			@Override
+			public void insertUpdate(DocumentEvent e) {
+				checkImage();
+			}
+
+			@Override
+			public void removeUpdate(DocumentEvent e) {
+				checkImage();
+			}
+
+			@Override
+			public void changedUpdate(DocumentEvent e) {
+				checkImage();
+			}
+		});
 		executableField = new JTextField(defaultExecutable(), 24);
 		machineBox = new JComboBox<>(machineLabels());
 		machineBox.setSelectedIndex(machineIndexOf(""));
@@ -340,9 +364,33 @@ public class BlastEmLiveProvider extends ComponentProviderAdapter {
 	/** Fills the ROM field from the program the user is looking at. */
 	public void setProgram(Program program) {
 		String path = program == null ? null : program.getExecutablePath();
-		romText = path == null ? "" : path;
+		String disc = DiscSheet.sheetOf(program);
+		if (disc != null) {
+			// A disc is more than the track Ghidra read, and the emulator only runs the whole of it.
+			romText = disc;
+			log(String.format("BlastEm is given the sheet %s%s", new File(disc).getName(),
+				disc.equals(path) ? ""
+					: String.format(
+						", which hands the track %s this program was made from to the drive",
+						new File(path).getName())));
+		}
+		else {
+			romText = path == null ? "" : path;
+		}
 		if (romField != null) {
 			romField.setText(romText);
+		}
+		checkImage();
+		if (refusal != null) {
+			log(refusal);
+		}
+	}
+
+	/** Looks at the image the field names and answers with what the panel can do with it. */
+	private void checkImage() {
+		refusal = DiscSheet.refusalFor(getRomPath());
+		if (startButton != null && !running) {
+			startButton.setEnabled(refusal == null);
 		}
 	}
 
@@ -393,7 +441,7 @@ public class BlastEmLiveProvider extends ComponentProviderAdapter {
 		if (startButton == null) {
 			return;
 		}
-		startButton.setEnabled(!running);
+		startButton.setEnabled(!running && refusal == null);
 		stopButton.setEnabled(running);
 		romField.setEnabled(!running);
 		machineBox.setEnabled(!running);

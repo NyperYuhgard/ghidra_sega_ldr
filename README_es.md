@@ -48,6 +48,7 @@ necesita su propio lenguaje y su propio espacio de direcciones.
 | `SegaSmsLoader` — *Sega Master System / Game Gear Loader* | `TMR SEGA` en `0x7FF0`, si no en `0x3FF0`, si no en `0x1FF0` | `z80:LE:16:default` |
 | `SegaCdMainLoader` — *Sega CD Loader (Main 68000)* | `SEGADISCSYSTEM` en `0x0` o en `0x10` de la imagen, o una hoja `.cue` cuyo volcado lo lleve | `68000:BE:32:MC68020` |
 | `SegaCdSubLoader` — *Sega CD Loader (Sub 68000)* | el mismo disco, y hay que pedirlo por nombre | `68000:BE:32:MC68020` |
+| `SegaCdMmdLoader` — *Sega CD Loader (Disc Member)* | un fichero del volumen de ese disco, que hay que nombrar, con la dirección en la que se coloca | `68000:BE:32:MC68020` |
 
 Todo lo que hay bajo este epígrafe se crea durante la importación, antes de que corra ningún análisis, y
 cubre las máquinas de 68000. Las de 8 bits tienen su propio epígrafe:
@@ -213,14 +214,22 @@ con `-loader SegaCdSubLoader`, o se escoge de la lista de cargadores del diálog
 programa en Ghidra es un procesador, así que las dos vistas de un disco significan importar la imagen dos
 veces.
 
+Un tercer cargador, `SegaCdMmdLoader`, hace un programa de un *fichero* del disco en lugar del disco: ver
+[Miembros del disco](#miembros-del-disco).
+
 ### El disco, y lo que se lee de él
 
 Una imagen se acepta cuando sus primeros bytes, o los dieciséis que vienen después, son
 `SEGADISCSYSTEM`: una pista de sectores de 2048 bytes, o un volcado en crudo de sectores de 2352. Una
-hoja `.cue` también se acepta: su primera pista `MODE1` nombra el volcado que hay que leer y el sector en
-el que empieza su zona de programa, que es lo que sitúa las lecturas.
+hoja `.cue` también se acepta, empiece como empiece — delante puede ir un número `CATALOG`, un comentario
+`REM`, un género o una fecha — y reparta el disco como lo reparta: se abre cada `FILE` de bytes
+almacenados que la hoja nombra, con los nombres entrecomillados que lleven espacios y paréntesis, y la
+leída es la pista cuyo volcado lleva la firma. Su `INDEX 01` dice dónde empieza la pista; cuando los bytes
+no están de acuerdo con la hoja, lo que se cree es la firma, y el registro de la importación dice a qué
+distancia estaban uno de otro. Las pistas de audio se pasan por alto, y también un volcado guardado como
+hoja `MOTOROLA` en vez de bytes almacenados, que no se puede leer sector a sector.
 
-Lo que el cargador saca del disco es poco y fijo:
+Lo que el cargador saca del disco son tres cosas pequeñas y fijas, y una que no es ninguna de las dos:
 
 - el **primer sector**, `0x800` bytes de cabecera, leídos por sus campos de dispositivo y región, su
   versión, su fecha de publicación y sus dos zonas de programa;
@@ -228,11 +237,61 @@ Lo que el cargador saca del disco es poco y fijo:
   `0x44`), colocado donde ese procesador lo ejecuta;
 - el **programa de la consola**, que no es una promesa que el disco haga: la etapa de arranque siempre
   toma 1,5 KiB de `0x200` del disco y los pone en el fondo de la RAM de trabajo, desde donde piden a la
-  unidad el resto del juego.
+  unidad el resto del juego;
+- la **lista de los ficheros** que el disco lleva en su volumen, que toda importación de un disco escribe
+  en su registro, con el sector y la longitud de cada uno, directorios incluidos — ver
+  [Miembros del disco](#miembros-del-disco).
 
-El segundo par de la cabecera (`0x48` y `0x4c`) se lee y se informa; ningún disco hace que la consola
-lea desde donde ese par dice, así que a uno que lo rellene de otra cosa se avisa de ello y no se le
-cree más.
+El segundo par de la cabecera (`0x48` y `0x4c`) se lee, y se dice en voz alta siempre que está vacío o
+lleva un sitio distinto de ese: ninguna hoja hace que la consola lea desde donde ese par dice, así que de
+un disco se avisa y no se le cree más allá.
+
+### Miembros del disco
+
+Debajo de sus programas, un disco de Sega CD es un volumen ISO-9660, y dentro de ese volumen un juego
+guarda programitas para el 68000 de la consola: los ficheros llamados `.MMD` que carga en RAM y ejecuta,
+junto a los datos `.BIN`, las pistas `.STM` y los `.TXT` del mismo volumen.
+
+`SegaCdMmdLoader` importa uno de esos ficheros como programa propio, sobre el mapa de la consola — los
+bloques que describe [Vista del lado del cartucho](#vista-del-lado-del-cartucho), para que las
+referencias que el miembro hace a las memorias de alrededor recaigan en un nombre:
+
+```bash
+analyzeHeadless proj name -import game.cue -loader SegaCdMmdLoader \
+    -loader-cd-mmd ATTACK.MMD -loader-cd-mmd-address 0xFF2000
+```
+
+**El disco no dice dónde se carga un miembro.** La cabeza de un `.MMD` no es una tabla de vectores, y las
+direcciones de su interior nombran a la vez la RAM de trabajo, la RAM de palabras, el cartucho y la
+unidad: nada de lo que el disco guarda fija el sitio, así que la dirección se pide, y el registro dice, con
+todas esas letras, que la que salió es la que se dio. Se lee como `ff2000`, `0xff2000` o `$ff2000`, y no
+tiene que llegar más allá de `0xFFFFFF`. El nombre se casa como un volumen lo escribe: en mayúsculas, sin
+el `;1`, con la extensión solo cuando nada más contesta al mismo tronco, y con el directorio por delante
+cuando dos ficheros comparten nombre.
+
+El diálogo pide lo mismo, y el programa propio del disco no es donde un miembro aparece: con la `.cue`
+escogida, se cambia **Format** de *Sega CD Loader (Main 68000)* a *Sega CD Loader (Disc Member)* y se
+pulsa `Options…`; los dos campos que muestra bajo *The member of the volume* contestan por el disco —
+el del nombre se abre con los ficheros que el volumen lleva, puesto en el primer `.MMD` de ellos, y el
+de la dirección es lo que queda por escribir. El **Format** primero y `Options…` después: el diálogo
+vacía lo que se hubiera escrito en cuanto cambia el cargador, y lo que se contestó vuelve para la
+siguiente importación del mismo proyecto. Una importación que no nombra ningún fichero toma aquel en
+el que la caja está puesta, y dice cuál en el registro. Un miembro es un programa propio, así que cien
+ficheros son cien importaciones, y los nombres que valen la pena escoger son los que toda importación de
+un Sega CD escribe en su registro. Un fichero sacado del disco por delante no es una vía de entrada: un
+`.MMD` no lleva nada que diga qué es, así que hay que leerlo a través del disco del que vino.
+
+Lo que llega es un bloque llamado como el fichero, con una función en su primer byte, y cada ventana de
+memoria que lo contenía queda cortada a las partes que sobran — `WORK_RAM_FREE` pasa a ser dos bloques,
+por decir algo — así que nunca se crea nada encima del miembro. Un fichero se lee hasta 1 MiB y se reporta
+la longitud que quedó fuera de eso. Un miembro puesto sobre registros, en `0xA12000` por ejemplo, se nombra
+con todos los bloques en los que entra y se coloca igualmente, como superposición: lo que se pidió en la
+importación no es cosa del cargador negarlo.
+
+Nada de esto llega al disco importado antes, y no está pensado para ello: la RAM de trabajo de ese mapa se
+crea sin bytes, porque el disco no dice qué lleva un juego ahí, y un listado de `??` sobre `WORK_RAM_FREE`
+es eso mismo dicho en voz alta. Los bytes de esas direcciones salen de la RAM del emulador, que ninguna
+versión de este módulo puede entregar todavía.
 
 ### Vista del lado del cartucho
 
@@ -247,7 +306,7 @@ cree más.
 | `CELL_IMAGE` | `0x220000`–`0x23FFFF` | la ventana de esa RAM de la que el ASIC dibuja su tipografía en pantalla |
 | `GATE_ARRAY` | `0xA12000` | los registros del ASIC, donde un cartucho pone un controlador de disquetera |
 | `BOOT_PROGRAM` | `0xFF0000`–`0xFF05FF` | el programa que arrancó con el disco, y `BOOT_entry` en su primer byte |
-| `WORK_RAM_FREE` | `0xFF0600`–`0xFFFFFF` | la RAM de trabajo después de él |
+| `WORK_RAM_FREE` | `0xFF0600`–`0xFFFFFF` | la RAM de trabajo después de él, en tantos bloques como haga falta por los miembros del volumen |
 
 Los bloques de Genesis de [Registros del hardware](#registros-del-hardware) llegan con esta vista —
 `Z80`, `SYS1`, `SYS2`, `Z802`, `Z803`, `TIME`, `TMSS`, `VDP` — menos `FDC`, cuya dirección se la queda el
@@ -294,21 +353,15 @@ un juego de registros elegido por una escritura en el puerto de control: `PCM_CH
 - **La cabecera del disco** no se coloca en memoria —es el sector que lee la etapa de arranque antes de
   que exista ningún programa—, pero toda su placa de texto va al comentario de cada bloque de programa que
   describe, y al registro de la importación.
-- **Las rutinas que el programa de la unidad anuncia**: sus primeros 16 bytes son la marca del procesador
-  en el que corre (`MAIN-SUBCPU` para la unidad), la palabra en `0x18` da el desplazamiento de una tabla de
-  palabras, y cada una de esas es el desplazamiento de una rutina. Las tres primeras se convierten en
-  `DISC_init`, `DISC_main` y `DISC_int2`, las siguientes en `DISC_usercall1`, `DISC_usercall2` y así, y cada
-  una se desensambla.
 - **Las entradas de la etapa de arranque** se etiquetan donde las pone el hardware, en la RAM de programa
   baja para la unidad (`bios_common_work` en `0x5E80`, y luego `_setjmptbl`, `_waitvsync`, `_buram`,
   `_cdboot`, `_cdbios`, `_usercall0`–`_usercall3`, `_adrerr`, `_coderr`, `_diverr`, `_chkerr`, `_trperr`,
   `_spverr`, `_trace`, `_nocod0`, `_nocod1` y `_slevel1`–`_slevel3` hasta `0x5F82`) y en la ROM de arranque
   para la consola, cuando se dio su fichero: las entradas `_bios_*` de `0x280` a `0x368`, que es cómo una
   llamada de la interfaz de programación de aplicaciones del CD se convierte en un nombre del listado.
-- **`-loader-verify`** informa de un primer sector que no abre con `SEGADISCSYSTEM`, de un programa de la
-  unidad declarado dentro del propio sector de cabecera o más allá de lo que el disco guarda, y del par de
-  la cabecera que no coincide con el sitio fijo del que lee la consola. Ninguno de ellos aborta la
-  importación.
+- **`-loader-verify`** informa de un primer sector que no abre con `SEGADISCSYSTEM`, y de un programa de la
+  unidad declarado dentro del propio sector de cabecera o más allá de lo que el disco guarda. Ninguno de
+  ellos aborta la importación.
 
 ## Opciones de importación
 
@@ -326,6 +379,8 @@ interacción.
 | SMS / GG | `-loader-cart-ram-file <ruta>` | Cartridge RAM contents file (.sav / .sms) | vacía | rellena la superposición `CART_RAM` de `0x8000` con un fichero de partida guardada |
 | Sega CD | `-loader-cd-bios <ruta>` | CD BIOS image the console runs before the disc (.bin) | vacía | rellena `BIOS_ROM` y su alias en la vista de la consola |
 | Sega CD | `-loader-cd-bram <ruta>` | Backup RAM contents file (.brm / .bkr) | vacía | rellena `BACKUP_RAM` en la vista de la unidad, repartido por las direcciones impares de su ventana |
+| Miembro del disco | `-loader-cd-mmd <nombre>` | Disc member to import (ISO-9660 name) | el primer `.MMD` del volumen | el fichero del volumen que se importa; en el diálogo es una caja con los ficheros que el disco lleva, y un nombre que no sea uno de ellos se contesta con la lista |
+| Miembro del disco | `-loader-cd-mmd-address <dirección>` | Address the member is loaded at | vacía | dónde van esos bytes, `0xFF2000` para la RAM de trabajo; hace falta porque ningún disco la dice |
 
 Las dos opciones de fichero de un disco se comprueban en la importación, y una ruta que no es un fichero
 para la importación con el motivo en vez de cargar media máquina.
@@ -395,9 +450,10 @@ defecto).
 ## Desensamblado en vivo con BlastEm
 
 El plugin `BlastEm Live` dirige el emulador y convierte en código del programa abierto lo que este
-ejecuta, mientras se juega. Se apoya en el `-l` del propio BlastEm: el emulador escribe `address.log` en
-la carpeta desde la que arrancó, con una dirección hexadecimal por cada bloque del 68000 que traduce. El
-plugin lee ese fichero mientras crece y desensambla cada lote.
+ejecuta, mientras se juega. Se apoya en el `-l` del propio BlastEm: el emulador escribe su traza en la
+carpeta desde la que arrancó, con una dirección hexadecimal por cada bloque del 68000 que traduce —
+`address.log` para el procesador del cartucho, `address_sub.log` para el propio de la unidad en un disco—.
+El plugin lee ese fichero mientras crece y desensambla cada lote.
 
 BlastEm instrumenta sus núcleos de 68000 y nada más. El Z80 del Master System, Game Gear, SG-1000 y
 SC-3000 no registra direcciones, y tampoco lo hacen el reproductor multimedia de Sega (que no tiene CPU)
@@ -415,21 +471,23 @@ activa antes el plugin en `File -> Configure`.
 
 | Campo | Qué significa |
 | --- | --- |
-| `ROM` | la imagen que ejecuta el emulador; viene rellena con el fichero del que se importó este programa, y la sesión se niega a arrancar con ninguno distinto |
+| `ROM` | la imagen que ejecuta el emulador; viene rellena con el fichero del que se importó este programa —en un disco, con su hoja `.cue` en vez de con la pista desde la que se construyó el programa, salvo que esa hoja reparta el disco entre varios ficheros, caso en el que la ventana no la arranca—, y la sesión se niega a arrancar con ninguna distinta |
 | `BlastEm` | el binario del emulador; viene relleno con el primer `blastem` que encuentre en el PATH |
 | `Machine` | la consola a emular, pasada como `-m`; arranca en *Detect from the image* y la lista, con lo que da cada una, está más abajo |
 | `Disassemble` | cómo se convierte en código un lote de direcciones; ver abajo |
-| `Trace folder` | el directorio donde BlastEm se ejecuta, y por tanto el que contiene `address.log` |
+| `Trace folder` | el directorio donde BlastEm se ejecuta, y por tanto el que contiene la traza que la ventana lee |
 | `Extra args` | todo lo demás para el emulador, partido como lo partiría una shell |
 | `RAM too` | toma también las direcciones que caen en la RAM de trabajo o la de respaldo; útil para parches y rutinas que el juego carga en RAM, ruidoso en cualquier otro caso |
 | `follow the PC` | mueve el cursor del listado a la última dirección a la que llegó el emulador |
 | `pause` | deja el emulador corriendo y sigue contando, sin tocar el programa |
 | `Start` / `Stop` | empiezan o terminan la sesión; Stop entrega a los analizadores todo lo que la sesión creó fuera de su cola |
-| `Ingest log…` | elige un `address.log` dejado por una ejecución anterior y lo desensambla entero |
+| `Ingest log…` | elige una traza dejada por una ejecución anterior y la desensambla entera |
 
 El emulador se arranca como `blastem [-m machine] -l [extra args] <rom>` en la carpeta de la traza; el
-`-m` se omite en la primera fila de la lista de abajo. Stop lo termina, y lo mismo hacen cerrar el
-programa, cambiarse a otro programa o salir de la herramienta, así que no queda ningún proceso huérfano.
+`-m` se omite en la primera fila de la lista de abajo. El comando exacto se escribe en el registro de la
+ventana, y también el código de salida cada vez que el proceso muere antes de pulsar Stop. Stop lo
+termina, y lo mismo hacen cerrar el programa, cambiarse a otro programa o salir de la herramienta, así que
+no queda ningún proceso huérfano.
 
 | Máquina (diálogo) | `-m` | Traza |
 | --- | --- | --- |
@@ -448,9 +506,19 @@ programa, cambiarse a otro programa o salir de la herramienta, así que no queda
 
 Un disco de Sega CD no tiene identificador propio: BlastEm lo reconoce por la cabecera
 `SEGADISCSYSTEM`, así que la primera fila es la única forma de llegar a él. Sobre un disco, el 68000
-principal escribe `address.log` y la sub CPU escribe `address_sub.log`, y la ventana lee el primero. La
-detección también distingue Master System de Game Gear por la extensión del fichero, así que deja una
-imagen de Game Gear llamada `.gg`.
+principal escribe `address.log` y la sub CPU escribe `address_sub.log`, y la ventana lee la que
+corresponda a la vista que se está rellenando —el programa de la unidad se traza en la segunda, el de la
+consola en la primera—. Un programa hecho de un miembro del volumen también es de la consola, y se traza
+por tanto en `address.log`, el mismo del que se rellena el programa que arrancó con el disco. El emulador
+necesita la hoja, no el volcado de la pista con el que se construyó el programa, y el campo `ROM` ya
+contiene la hoja cuando el programa vino de una. El soporte de Sega CD en esta ventana es
+experimental, y una hoja que reparte el disco entre varios ficheros —como lo hace un volcado preparado
+para grabar— no se ejecuta: `Start` queda apagado y el registro dice por qué. Lleva el disco a una sola
+imagen de su pista de datos, un `.iso` hecho desde la hoja, y apunta el campo a esa: BlastEm lee una
+imagen así por su cabecera `SEGADISCSYSTEM`, y el cargador también. Una traza del disco repartido, hecha
+en una ejecución ajena, entra igualmente por `Ingest log…`. La detección también
+distingue Master System de Game Gear por la extensión del fichero, así que deja una imagen de Game Gear
+llamada `.gg`.
 
 La elección de máquina solo alimenta `-m`: quien decide el lenguaje y el mapa de memoria del programa que
 se está rellenando es el cargador, así que lo que se ejecuta tiene que ser la misma consola con la que se
@@ -562,16 +630,31 @@ build.gradle             compilación del módulo
 - Las imágenes de SG-1000 y SC-3000 todavía no se reconocen: sus cartuchos no llevan cabecera, así que un
   cargador para ellos habría que elegirlo a mano y darle el tamaño de la imagen.
 - De un disco Sega CD el cargador lee el sector de cabecera y los dos programas que la cabecera coloca, que
-  es hasta donde llega la propia etapa de arranque antes de que haya un juego en memoria. Todo lo que viene
-  después —los datos de un juego, y el resto de lo que su primer programa pide a la unidad mientras
-  corre— se queda en el disco hasta que la traza en vivo lo alcanza. Un disco que además lleve un programa
-  de Sega 32X recibe el mapa de la consola sin la parte del 32X, porque el 32X de un disco así no está en
-  lo que la cabecera señala.
-- De una hoja `.cue` solo se lee su primera pista `MODE1`, y el volcado que esa pista nombra tiene que estar
-  junto a la hoja. Una pista de audio no lleva nada que ejecute un procesador, y un volcado de un modo
-  distinto de `MODE1` no tiene zona de programa.
-- La traza en vivo de un disco es la de un procesador: BlastEm escribe las direcciones del núcleo propio de
-  la unidad en un segundo log, `address_sub.log`, que la ventana todavía no lee.
+  es hasta donde llega la propia etapa de arranque antes de que haya un juego en memoria, y la lista de los
+  ficheros que el volumen del disco lleva. Todo lo demás —los datos de un juego, y el resto de lo que su
+  primer programa pide a la unidad mientras corre— se queda en el disco hasta que un miembro se importa por
+  su nombre o la traza en vivo lo alcanza. Un disco que además lleve un programa de Sega 32X recibe el mapa
+  de la consola sin la parte del 32X, porque el 32X de un disco así no está en lo que la cabecera señala.
+- El volumen de un disco se busca en los sectores de 2048 bytes que una pista mode 1 da: un disco cuyos
+  datos están encuadrados de otra manera no tiene descriptor que encontrar, y entonces la importación dice
+  que sus ficheros no se pueden listar y sigue exactamente como lo hacía antes. Un volumen que lleve un
+  descriptor suplementario y ninguno primario se informa y no se recorre. Los ficheros repartidos en más de
+  un extent se listan y se dice de ellos, no se cosen, y los nombres escritos con las escapadas de otro
+  estándar —Joliet— se listan tal como se leen.
+- Un miembro de un volumen se lee hasta 1 MiB, y el sitio donde su dirección lo pone es asunto de quien
+  importa: el disco no dice nada de eso, y todas las líneas del registro sobre un miembro lo repiten.
+- De una hoja `.cue` el cargador lee la única pista que lleva programa: el volcado que contenga
+  `SEGADISCSYSTEM`, esté en su propio fichero o en uno que comparta con el resto del disco, buscado junto a
+  la hoja. Una pista de audio no lleva nada que ejecute un procesador, un volcado de un modo distinto de
+  `MODE1` no tiene zona de programa, y un fichero `MOTOROLA` es hexadecimal impreso en vez de bytes
+  almacenados, así que no se puede leer sector a sector. El encuadre de modo 2 y de CD-XA no se reconoce.
+- La traza en vivo de un disco es la de un procesador cada vez: la ventana sigue la traza que escribe el
+  núcleo del que el programa abierto es la vista, así que las dos partes de un disco significan una sesión
+  para cada una.
+- El soporte de Sega CD en la ventana en vivo es experimental, y no ejecuta un disco cuyo `.cue` lo
+  reparta entre varios ficheros: la ventana deja esa hoja en paz. Convierte el disco a un solo `.iso` de su
+  pista de datos, importa el `.iso` y arranca la sesión desde él, o toma por `Ingest log…` una traza del
+  disco repartido hecha en una ejecución ajena.
 - En Master System y Game Gear la traza en vivo es imposible, no está sin terminar: BlastEm no registra
   direcciones de su Z80. Sobre esas imágenes usa `SegaIngestAddressLog` y los analizadores, y juega con el
   emulador como siempre.
@@ -615,5 +698,9 @@ build.gradle             compilación del módulo
   que declara la cabecera, el espacio de direcciones de cada procesador como lo enseña el ASIC, los
   nombres del `GATE_ARRAY`, de la memoria de sonido y de la RAM con pila, y las entradas de la etapa de
   arranque etiquetadas.
+- El volumen de ficheros que un disco lleva también se lee: se encuentran sus descriptores, se recorren sus
+  directorios y sus ficheros se escriben en el registro de toda importación de un Sega CD, así que lo que
+  hay dentro del disco se sabe sin montarlo. Un cargador importa uno de esos ficheros como programa propio,
+  con el mapa de la consola alrededor y las ventanas de memoria cortadas en torno a él.
 - El plugin `BlastEm Live`, el lector del log y los comandos de ingesta por lote que hay detrás, y
   `SegaIngestAddressLog` para trabajar sin el emulador delante.

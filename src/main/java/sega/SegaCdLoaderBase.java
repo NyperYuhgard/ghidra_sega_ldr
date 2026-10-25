@@ -20,7 +20,9 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.List;
 
 import ghidra.app.plugin.core.analysis.AutoAnalysisManager;
@@ -30,6 +32,7 @@ import ghidra.app.util.bin.BinaryReader;
 import ghidra.app.util.bin.ByteProvider;
 import ghidra.app.util.importer.MessageLog;
 import ghidra.app.util.opinion.AbstractProgramLoader;
+import ghidra.app.util.opinion.LoadException;
 import ghidra.app.util.opinion.LoadSpec;
 import ghidra.app.util.opinion.Loaded;
 import ghidra.app.util.opinion.Loader;
@@ -51,14 +54,17 @@ import ghidra.program.model.mem.Memory;
 import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.mem.MemoryConflictException;
 import ghidra.program.model.symbol.SourceType;
+import ghidra.util.Msg;
 import ghidra.util.exception.CancelledException;
 import ghidra.util.task.TaskMonitor;
 
 /**
  * What the two 68000 processors of a Sega CD disc have in common: recognizing the disc, reaching
- * the programs its header declares and naming the ASIC both of them are wired to. The address space
- * each processor is given is left to the loader of that processor, because the ASIC shows the same
- * memories to the two of them at different addresses.
+ * the programs its header declares, naming the ASIC both of them are wired to, and telling the
+ * files of its volume. The address space each processor is given is left to the loader of that
+ * processor, because the ASIC shows the same memories to the two of them at different addresses.
+ * One file of the volume is code of the console's processor too, and a loader that imports one
+ * names the memory the importer says it was carried to, since the disc never says it.
  */
 abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 
@@ -97,7 +103,6 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 
 	private static final long PCM_WINDOW = 0x8000L;
 
-	/** Word index into the ASIC's register file, and the name the hardware gives that register. */
 	/**
 	 * Word address in the boot ROM, and the name the sheet of the boot stage gives that entry. A
 	 * disc calls the ROM through these, so marking them is what makes a call readable.
@@ -240,6 +245,38 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 	/** True for the processor the drive itself runs, false for the one the console runs. */
 	abstract boolean isSubCpu();
 
+	/** A member of the volume of the disc, and the place it is given in memory, or none. */
+	record Member(String name, long address) {
+	}
+
+	/**
+	 * The options that name a member, for a loader that imports one. The file being imported is
+	 * handed over because a loader may read what it offers out of it, and is closed by nobody but
+	 * the importer that opened it.
+	 */
+	protected List<Option> memberOptions(ByteProvider provider) {
+		return List.of();
+	}
+
+	/**
+	 * The member asked for out of the options of the import, or null when none was asked for. Only
+	 * the options are read here: the disc itself is opened once, by the map that places the member.
+	 */
+	protected Member memberFor(ImporterSettings settings) throws LoadException {
+		return null;
+	}
+
+	/**
+	 * An import that cannot go on, with the reason of it said where both ways of importing will
+	 * hear it: the dialog of the importer reads the message off the exception, while a headless
+	 * import answers an exception of loading with a line about the parameters it was given and
+	 * leaves the reason out.
+	 */
+	static LoadException refuse(String message) {
+		Msg.error("Sega CD", message);
+		return new LoadException(message);
+	}
+
 	@Override
 	public LoaderTier getTier() {
 		return LoaderTier.SPECIALIZED_TARGET_LOADER;
@@ -270,8 +307,14 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 	protected List<Loaded<Program>> loadProgram(ImporterSettings settings)
 			throws IOException, CancelledException {
 
+		Member member = memberFor(settings);
 		Program program = createProgram(settings);
-		Loaded<Program> loaded = new Loaded<>(program, settings);
+		Loaded<Program> loaded = member == null
+			? new Loaded<>(program, settings)
+			// A disc holds a hundred files and an import of each one is a program of its own, so
+			// they cannot all be named after the disc they came off.
+			: new Loaded<>(program, member.name(), settings.provider().getFSRL(), settings.project(),
+				settings.projectRootPath(), settings.mirrorFsLayout(), settings.consumer());
 
 		boolean success = false;
 		try {
@@ -290,7 +333,7 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 	protected void loadProgramInto(Program program, ImporterSettings settings)
 			throws IOException, CancelledException {
 
-		new CdMemoryMap(program, settings, isSubCpu(), getName()).build();
+		new CdMemoryMap(program, settings, isSubCpu(), getName(), memberFor(settings)).build();
 	}
 
 	@Override
@@ -305,6 +348,7 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 			SegaLoadOptions.ARG_VERIFY));
 		options.add(new Option(NAME_BIOS_FILE, "", String.class, ARG_BIOS_FILE));
 		options.add(new Option(NAME_BRAM_FILE, "", String.class, ARG_BRAM_FILE));
+		options.addAll(memberOptions(provider));
 		return options;
 	}
 
@@ -336,6 +380,7 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 		private final Memory memory;
 		private final CdImage disc;
 		private final boolean subCpu;
+		private final Member member;
 
 		private final boolean hardwareRegisters;
 		private final boolean verify;
@@ -344,9 +389,17 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 
 		private CdHeader header;
 		private String headerPlate = "";
+		private CdIso volume;
 
-		CdMemoryMap(Program program, ImporterSettings settings, boolean subCpu, String loaderName)
-				throws IOException {
+		/** What is already given a place of its own, so that a window of RAM can be cut around it. */
+		private final List<long[]> reserved = new ArrayList<>();
+
+		private byte[] memberCode;
+		private String memberPath = "";
+		private String memberBlock = "";
+
+		CdMemoryMap(Program program, ImporterSettings settings, boolean subCpu, String loaderName,
+				Member member) throws IOException {
 
 			this.program = program;
 			this.loaderName = loaderName;
@@ -355,6 +408,7 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 			this.fpa = new FlatProgramAPI(program, monitor);
 			this.memory = program.getMemory();
 			this.subCpu = subCpu;
+			this.member = member;
 			this.disc = CdImage.open(settings.provider(), log);
 
 			List<Option> options = settings.options();
@@ -368,25 +422,74 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 		void build() throws IOException, CancelledException {
 			monitor.setMessage(String.format("%s : Start loading", loaderName));
 
-			if (disc == null) {
-				// The importer only gets this far after the loader recognized a disc.
-				log.appendMsg("neither these bytes nor the file they point at are a readable disc");
+			try {
+				if (disc == null) {
+					// The importer only gets this far after the loader recognized a disc.
+					log.appendMsg(
+						"neither these bytes nor the file they point at are a readable disc");
+					return;
+				}
+
+				log.appendMsg(String.format(
+					"%s : %s, %d byte sectors, %d of them and %d KiB of user data", loaderName,
+					disc.getFileName(), disc.sectorBytes(), disc.sectors(),
+					disc.userDataBytes() / 1024));
+				if (disc.sheetName() != null) {
+					log.appendMsg(String.format(
+						"%s : read through the sheet %s, which divides the disc into %s", loaderName,
+						disc.sheetName(), disc.sheetLayout()));
+				}
+
+				readFileSystem();
+				readHeader();
+
+				if (member != null) {
+					readMember();
+				}
+
+				if (subCpu) {
+					buildDriveView();
+				}
+				else {
+					buildCartridgeView();
+				}
+
+				if (member != null) {
+					placeMember();
+				}
+
+				monitor.setMessage(String.format("%s : Loading done", loaderName));
+			}
+			finally {
+				// A disc reached through its sheet is a second file, opened here and no one else's.
+				if (disc != null) {
+					disc.close();
+				}
+			}
+		}
+
+		/**
+		 * The files of the volume, listed. A disc that carries no volume, or one whose files cannot
+		 * be read at all, is imported exactly as it would have been before any of this existed.
+		 */
+		private void readFileSystem() {
+			try {
+				volume = CdIso.open(disc, log);
+			}
+			catch (IOException e) {
+				log.appendMsg(String.format("the files of the disc could not be read: %s",
+					e.getMessage()));
 				return;
 			}
 
-			log.appendMsg(String.format("%s : %s, %d byte sectors, %d KiB of user data", loaderName,
-				disc.getFileName(), disc.sectorBytes(), disc.userDataBytes() / 1024));
-
-			readHeader();
-
-			if (subCpu) {
-				buildDriveView();
+			if (volume != null) {
+				volume.logEntries();
+				// The listing is the only way to know what a disc holds, and a file of it is a program
+				// of its own rather than something that shows up inside the disc's. Say where to ask.
+				log.appendMsg(String.format(
+					"to bring one of these files into Ghidra, import the disc again with the loader \"%s\" and give it the name of the file and the address it is loaded at",
+					SegaCdMmdLoader.LOADER_NAME));
 			}
-			else {
-				buildCartridgeView();
-			}
-
-			monitor.setMessage(String.format("%s : Loading done", loaderName));
 		}
 
 		/**
@@ -406,10 +509,8 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 			StringBuilder plate = new StringBuilder();
 			plate.append(String.format("%s  %s  %s\n%s  released %s\n", header.systemName(),
 				header.versionInfo(), header.regions(), header.deviceInfo(), header.releaseDate()));
-			plate.append(String.format("drive program 0x%X bytes at disc offset 0x%X\n",
-				header.subProgram().length(), header.subProgram().discAddress()));
-			plate.append(String.format("cartridge program 0x%X bytes at disc offset 0x%X",
-				header.mainProgram().length(), header.mainProgram().discAddress()));
+			plate.append(String.format("drive program %s\n", declaredArea(header.subProgram())));
+			plate.append(String.format("cartridge program %s", declaredArea(header.mainProgram())));
 			headerPlate = plate.toString();
 
 			log.appendMsg(headerPlate.replace("\n", "; ").trim());
@@ -417,6 +518,13 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 			if (verify) {
 				verifyHeader();
 			}
+		}
+
+		/** How the header describes one of the two program areas a disc can declare. */
+		private static String declaredArea(CdHeader.Program area) {
+			return area.isPresent()
+				? String.format("0x%X bytes at disc offset 0x%X", area.length(), area.discAddress())
+				: "nothing is declared";
 		}
 
 		private void verifyHeader() {
@@ -452,8 +560,9 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 				false);
 			createBiosEntries(BIOS_ENTRIES_FOR_SUB);
 
-			long free = placeProgram("DISC_PROGRAM", PROG_RAM_PROGRAM_OFFSET, code, true);
-			ramBlock("PROGRAM_RAM_FREE", free, PROG_RAM_SIZE - free,
+			placeProgram("DISC_PROGRAM", PROG_RAM_PROGRAM_OFFSET, code, true);
+			freeWindow("PROGRAM_RAM_FREE", PROG_RAM_PROGRAM_OFFSET,
+				PROG_RAM_SIZE - PROG_RAM_PROGRAM_OFFSET,
 				"the rest of program RAM, left to the program above and to the transfers the drive makes",
 				false);
 
@@ -472,10 +581,6 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 			if (hardwareRegisters) {
 				createGateArray(0xFF8000L);
 				createPcmRegisters();
-			}
-
-			if (code != null) {
-				markDiscEntries(PROG_RAM_PROGRAM_OFFSET, code);
 			}
 		}
 
@@ -498,15 +603,15 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 
 			ramBlock("PROGRAM_RAM", PROG_WINDOW_FOR_MAIN, PROG_RAM_PROGRAM_OFFSET,
 				"the low program RAM, shared with the drive's processor", false);
-			long free = placeProgram("DISC_PROGRAM", PROG_WINDOW_FOR_MAIN + PROG_RAM_PROGRAM_OFFSET,
-				driveCode, true);
-			ramBlock("PROGRAM_RAM_FREE", free,
-				PROG_WINDOW_FOR_MAIN + PROG_WINDOW_SIZE_FOR_MAIN - free,
+			placeProgram("DISC_PROGRAM", PROG_WINDOW_FOR_MAIN + PROG_RAM_PROGRAM_OFFSET, driveCode,
+				true);
+			freeWindow("PROGRAM_RAM_FREE", PROG_WINDOW_FOR_MAIN + PROG_RAM_PROGRAM_OFFSET,
+				PROG_WINDOW_SIZE_FOR_MAIN - PROG_RAM_PROGRAM_OFFSET,
 				"program RAM this processor reaches through the window, past the program", false);
 
-			ramBlock("WORD_RAM", 0x200000L, 0x20000L,
+			freeWindow("WORD_RAM", 0x200000L, 0x20000L,
 				"the ASIC's word RAM, whose bank the gate array selects", false);
-			ramBlock("CELL_IMAGE", 0x220000L, 0x20000L,
+			freeWindow("CELL_IMAGE", 0x220000L, 0x20000L,
 				"the window of the word RAM the ASIC draws its on screen font from", false);
 
 			if (hardwareRegisters) {
@@ -515,11 +620,9 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 			}
 
 			byte[] bootCode = bootProgram();
-			long placed = placeProgram("BOOT_PROGRAM", WORK_RAM_ADDRESS, bootCode, true);
-			if (placed < WORK_RAM_ADDRESS + WORK_RAM_SIZE) {
-				ramBlock("WORK_RAM_FREE", placed, WORK_RAM_ADDRESS + WORK_RAM_SIZE - placed,
-					"the work RAM of the console, past what the disc put in it", false);
-			}
+			placeProgram("BOOT_PROGRAM", WORK_RAM_ADDRESS, bootCode, true);
+			freeWindow("WORK_RAM_FREE", WORK_RAM_ADDRESS, WORK_RAM_SIZE,
+				"the work RAM of the console, past what the disc put in it", false);
 
 			if (bootCode != null && bootCode.length > 0) {
 				createFunction(WORK_RAM_ADDRESS, "BOOT_entry");
@@ -536,7 +639,15 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 		 */
 		private byte[] bootProgram() throws IOException {
 			CdHeader.Program area = header == null ? null : header.mainProgram();
-			if (area != null && area.isPresent() && area.discAddress() != BOOT_PROGRAM_DISC_OFFSET) {
+			if (area != null && !area.isPresent()) {
+				// A disc whose second pair is empty is not broken: the console still gets the program
+				// the boot stage copies out of the header sector, and most discs ask for nothing else.
+				log.appendMsg(String.format(
+					"the disc declares no program for the console, so it is given only the 0x%X bytes the boot stage takes from disc offset 0x%X",
+					BOOT_PROGRAM_SIZE, BOOT_PROGRAM_DISC_OFFSET));
+			}
+			else if (area != null && area.isPresent()
+					&& area.discAddress() != BOOT_PROGRAM_DISC_OFFSET) {
 				log.appendMsg(String.format(
 					"the header pairs 0x%X with the processor of the cartridge side, whose program is taken from disc offset 0x%X either way",
 					area.discAddress(), BOOT_PROGRAM_DISC_OFFSET));
@@ -573,25 +684,139 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 		}
 
 		/**
-		 * The bytes of a disc program, in the memory the processor that runs them sees. Returns the
-		 * address after the block, which is where the memory that is not a program begins.
+		 * The bytes of a disc program, in the memory the processor that runs them sees. The place it
+		 * takes is spoken for from then on, and the windows of memory around it are cut to what is
+		 * left.
 		 */
-		private long placeProgram(String name, long address, byte[] code, boolean write)
+		private void placeProgram(String name, long address, byte[] code, boolean write)
 				throws IOException {
 
 			if (code == null || code.length == 0) {
-				return address;
+				return;
 			}
 
 			initializedBlock(name, address, code,
 				String.format("%s, marked %s%n%s", markerOf(code), name, headerPlate), write, true,
 				false);
-
-			return address + code.length;
+			reserve(address, code.length);
 		}
 
-		/** Bytes given to a block of their own, reported the way the importer reports a block. */
-		private void initializedBlock(String name, long address, byte[] data, String comment,
+		/**
+		 * The member of the volume the importer named, taken off the disc and spoken for in memory. A
+		 * volume gives its files names and never a place, so the address is only ever the one the
+		 * person importing gave, and the import log has to say that in as many words.
+		 */
+		private void readMember() throws IOException, LoadException {
+			if (volume == null) {
+				throw refuse(String.format(
+					"%s carries no volume of files, so nothing named %s can be read off it",
+					disc.getFileName(), member.name()));
+			}
+
+			List<CdIso.Entry> found = volume.find(member.name());
+			if (found.isEmpty()) {
+				throw refuse(String.format(
+					"%s is not a file of the volume '%s' / '%s', which holds: %s", member.name(),
+					volume.systemId(), volume.volumeId(), volume.listPaths()));
+			}
+			if (found.size() > 1) {
+				StringBuilder names = new StringBuilder();
+				for (CdIso.Entry entry : found) {
+					names.append(names.isEmpty() ? "" : ", ").append(entry.path());
+				}
+				throw refuse(String.format(
+					"%s is the name of %d files of the volume: %s. Give the one meant with its directory in front of it",
+					member.name(), found.size(), names));
+			}
+
+			CdIso.Entry entry = found.get(0);
+			if (entry.directory()) {
+				throw refuse(String.format(
+					"%s is a directory of the volume, not a file of it", entry.path()));
+			}
+			if (member.address() < 0) {
+				throw refuse(String.format(
+					"the disc says nothing about where %s is loaded, and no address was given for it: name one of the memory of the console, as 0xFF2000. The volume '%s' / '%s' holds: %s",
+					member.name(), volume.systemId(), volume.volumeId(), volume.listPaths()));
+			}
+
+			memberPath = entry.path();
+			memberCode = volume.read(entry);
+			if (memberCode.length == 0) {
+				throw refuse(String.format("%s holds no bytes to place", memberPath));
+			}
+
+			reserve(member.address(), memberCode.length);
+		}
+
+		/**
+		 * The member given a block of its own, once every window of memory has been cut around it,
+		 * and a function at its first byte: what a member of a disc is made of is code the console
+		 * runs, at the address it was carried to.
+		 */
+		private void placeMember() {
+			memberBlock = blockNameOf(memberPath);
+			long end = member.address() + memberCode.length - 1;
+
+			List<String> crossed = new ArrayList<>();
+			for (MemoryBlock block : memory.getBlocks()) {
+				if (block.getStart().getOffset() <= end && member.address() <= block.getEnd().getOffset()) {
+					crossed.add(block.getName());
+				}
+			}
+			if (!crossed.isEmpty()) {
+				log.appendMsg(String.format(
+					"%s reaches into %s, which is already placed there: the address of a member is what the importer was given, not what the disc declares",
+					memberPath, String.join(", ", crossed)));
+			}
+			if (end > 0xFFFFFF) {
+				log.appendMsg(String.format(
+					"%s would reach 0x%X, and the console cannot name anything past 0xFFFFFF: what it holds beyond that is bytes no address of the machine will ever ask for",
+					memberPath, end));
+			}
+
+			MemoryBlock placed = initializedBlock(memberBlock, member.address(), memberCode,
+				String.format("%s%n%s is placed at 0x%X, which the disc says nothing about: it is the address the importer was given%n%s",
+					markerOf(memberCode), memberPath, member.address(), headerPlate), true, true,
+				false);
+
+			log.appendMsg(String.format(
+				"%s is %d byte(s) at 0x%X: the disc says nothing about where %s is loaded, and 0x%X is what you gave",
+				memberBlock, memberCode.length, member.address(), memberPath, member.address()));
+
+			if (placed == null) {
+				log.appendMsg(String.format(
+					"%s was not placed, because %s holds memory there already. Give the member an address of RAM.",
+					memberBlock, crossed.isEmpty() ? "the map of the console" : String.join(", ", crossed)));
+				return;
+			}
+
+			createFunction(member.address(), memberBlock + "_entry");
+		}
+
+		/**
+		 * What a file of a volume is called once it is a block of memory: the letters of its name,
+		 * and nothing else, because Ghidra reads a point or a slash in a name as the end of it.
+		 */
+		private static String blockNameOf(String path) {
+			StringBuilder name = new StringBuilder(path.length());
+			for (int i = 0; i < path.length(); i++) {
+				char c = path.charAt(i);
+				name.append(c >= 'a' && c <= 'z' ? Character.toUpperCase(c)
+					: (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') ? c : '_');
+			}
+			if (name.length() > 0 && Character.isDigit(name.charAt(0))) {
+				name.insert(0, '_');
+			}
+			return name.toString();
+		}
+
+		/**
+		 * Bytes given to a block of their own, reported the way the importer reports a block. Null
+		 * when Ghidra made nothing of the request, which it does without raising anything as soon as
+		 * the range touches a block that is already there.
+		 */
+		private MemoryBlock initializedBlock(String name, long address, byte[] data, String comment,
 				boolean write, boolean execute, boolean volatileBlock) {
 
 			try {
@@ -601,9 +826,11 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 				if (block != null && volatileBlock) {
 					block.setVolatile(true);
 				}
+				return block;
 			}
 			catch (AddressOverflowException e) {
 				log.appendException(e);
+				return null;
 			}
 		}
 
@@ -626,36 +853,6 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 		}
 
 		/**
-		 * A program of the drive announces the routines the boot stage calls: the word at 0x18 gives
-		 * the offset of a table of words, each of them the offset of a routine from the head of that
-		 * table. Three of them have names the boot stage gives them, the rest are numbered.
-		 */
-		private void markDiscEntries(long loadAddress, byte[] code) {
-			if (code.length < 0x1a) {
-				return;
-			}
-
-			int table = unsignedWord(code, 0x18);
-			if (table <= 0 || table + 2 > code.length) {
-				log.appendMsg(
-					"the program of the drive declares no table of routines, its entry stays unmarked");
-				return;
-			}
-
-			String[] known = { "DISC_init", "DISC_main", "DISC_int2" };
-			for (int index = 0; index < 16 && table + index * 2 + 1 < code.length; index++) {
-				int offset = unsignedWord(code, table + index * 2);
-				long entry = loadAddress + table + offset;
-				if (offset == 0 || entry >= loadAddress + code.length) {
-					break;
-				}
-
-				String name = index < known.length ? known[index] : "DISC_usercall" + index;
-				createFunction(entry, name);
-			}
-		}
-
-		/**
 		 * The routines the boot stage of the drive answers to, and the entries of the boot ROM a
 		 * console program calls, named where the hardware puts them. They are only labels: the
 		 * memory of the boot stage is not something a disc image can supply, and the ROM only when
@@ -671,16 +868,13 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 			}
 		}
 
-		private static int unsignedWord(byte[] code, int offset) {
-			return (code[offset] & 0xff) << 8 | code[offset + 1] & 0xff;
-		}
-
 		/**
 		 * The boot ROM is what the console runs before anything of the disc, and the vectors it
 		 * gives a disc are read from it, so it is placed where the ASIC maps it and left without
 		 * bytes when its file was not given.
 		 */
 		private MemoryBlock createBios() throws IOException {
+			reserve(0L, BIOS_SIZE);
 			if (biosFile == null) {
 				ramBlock("BIOS_ROM", 0L, BIOS_SIZE,
 					"the CD boot ROM the console runs first; the loader option names its file", true);
@@ -719,6 +913,7 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 				initializedBlock("BACKUP_RAM", BRAM_ADDRESS, spread, String.format(
 					"%s, %d byte(s) of battery RAM on the odd addresses of its window", bramFile,
 					length), true, false, true);
+				reserve(BRAM_ADDRESS, length * 2);
 			}
 
 			if (length * 2 < BRAM_WINDOW) {
@@ -780,6 +975,45 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 			if (block != null && volatileBlock) {
 				// Ghidra would otherwise drop the writes a program makes to hardware it never reads.
 				block.setVolatile(true);
+			}
+		}
+
+		/** A place that is spoken for, so that the windows of memory around it can be cut. */
+		private void reserve(long address, long length) {
+			if (length > 0) {
+				reserved.add(new long[] { address, address + length });
+			}
+		}
+
+		/**
+		 * The runs of one window of memory that nothing has been placed in. Ghidra does not complain
+		 * about a block that overlaps another: it logs the failure and makes nothing, which is how a
+		 * member of a disc would vanish without a word, so a window only ever gives what is left of
+		 * it. Where nothing is placed, the window is one block and is named as it always was.
+		 */
+		private void freeWindow(String name, long base, long size, String comment,
+				boolean isVolatile) {
+
+			List<long[]> taken = new ArrayList<>(reserved);
+			taken.sort(Comparator.comparingLong(run -> run[0]));
+
+			long end = base + size;
+			long at = base;
+			int runs = 0;
+
+			for (long[] run : taken) {
+				if (run[1] <= at || run[0] >= end) {
+					continue;
+				}
+				if (run[0] > at) {
+					ramBlock(runs++ == 0 ? name : name + "_" + runs, at, run[0] - at, comment,
+						isVolatile);
+				}
+				at = run[1];
+			}
+
+			if (at < end) {
+				ramBlock(runs++ == 0 ? name : name + "_" + runs, at, end - at, comment, isVolatile);
 			}
 		}
 
