@@ -41,7 +41,7 @@ class VectorsTable implements StructConverter {
 	
 	@Override
 	public DataType toDataType() {
-		Structure s = new StructureDataType("VectorsTable", 0);
+		Structure s = new StructureDataType(SegaDataTypes.SEGA, "VectorsTable", 0);
 		
 		for (int i = 0; i < VECTORS_COUNT; ++i) {
 			s.add(POINTER, 4, VECTOR_NAMES[i], null);

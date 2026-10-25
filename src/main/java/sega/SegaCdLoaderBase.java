@@ -495,7 +495,8 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 		/**
 		 * The header describes the disc instead of either processor's memory, so it is read and
 		 * reported rather than placed: what a program needs of it reaches it through the ASIC and
-		 * the boot stage, and this module does not guess an address for it.
+		 * the boot stage, and this module does not guess an address for it. Its structure is left in
+		 * the catalogue for anyone who wants the field names over a copy of those bytes.
 		 */
 		private void readHeader() throws IOException {
 			byte[] raw = disc.readUserData(0, CdHeader.SIZE);
@@ -505,6 +506,7 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 			}
 
 			header = new CdHeader(new BinaryReader(new BytesProvider(raw), true), 0);
+			SegaDataTypes.register(program, header.toDataType());
 
 			StringBuilder plate = new StringBuilder();
 			plate.append(String.format("%s  %s  %s\n%s  released %s\n", header.systemName(),
@@ -514,6 +516,9 @@ abstract class SegaCdLoaderBase extends AbstractProgramLoader {
 			headerPlate = plate.toString();
 
 			log.appendMsg(headerPlate.replace("\n", "; ").trim());
+			log.appendMsg(String.format(
+				"the CdHeader structure of these 512 bytes is in %s; they are the first user data of the disc, and the boot program this program holds begins %d byte(s) after them",
+				SegaDataTypes.SEGA_CD, BOOT_PROGRAM_DISC_OFFSET));
 
 			if (verify) {
 				verifyHeader();

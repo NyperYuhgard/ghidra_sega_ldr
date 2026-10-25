@@ -447,16 +447,9 @@ public class SegaSmsLoader extends AbstractProgramLoader {
 
 		private void markHeader() {
 			Address address = toAddr(ram, headerOffset);
-			try {
-				DataUtilities.createData(program, address, header.toDataType(), -1, false,
-					ClearDataMode.CLEAR_ALL_UNDEFINED_CONFLICT_DATA);
-			}
-			catch (CodeUnitInsertionException e) {
-				log.appendException(e);
+			if (!SegaDataTypes.apply(program, address, header.toDataType(), "SMS_HEADER", log)) {
 				return;
 			}
-
-			label(address, "SMS_HEADER");
 
 			program.getListing().setComment(address, CommentType.PLATE, String.format(
 				"%s  version %d\nproduct %s  checksum 0x%04X over 0x%X\nROM %d KiB in %d page(s)",

@@ -20,8 +20,8 @@ import java.io.IOException;
 import ghidra.app.util.bin.BinaryReader;
 import ghidra.program.model.data.ArrayDataType;
 import ghidra.program.model.data.ByteDataType;
-import ghidra.program.model.data.CategoryPath;
 import ghidra.program.model.data.DWordDataType;
+import ghidra.program.model.data.DataType;
 import ghidra.program.model.data.Structure;
 import ghidra.program.model.data.StructureDataType;
 
@@ -33,8 +33,6 @@ import ghidra.program.model.data.StructureDataType;
 class CdHeader {
 
 	static final int SIZE = 512;
-
-	static final CategoryPath CATEGORY = new CategoryPath("/Sega/Sega CD");
 
 	private final byte[] raw;
 
@@ -123,8 +121,8 @@ class CdHeader {
 		return listed.isEmpty() ? area : listed;
 	}
 
-	ghidra.program.model.data.DataType toDataType() {
-		Structure s = new StructureDataType("CdHeader", SIZE);
+	DataType toDataType() {
+		Structure s = new StructureDataType(SegaDataTypes.SEGA_CD, "CdHeader", SIZE);
 
 		s.add(new ArrayDataType(ByteDataType.dataType, 16, 1), 16, "SystemName",
 			"SEGADISCSYSTEM for a disc that boots the console");

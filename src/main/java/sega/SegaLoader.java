@@ -44,8 +44,6 @@ import ghidra.program.model.address.AddressSetView;
 import ghidra.program.model.data.ByteDataType;
 import ghidra.program.model.data.DWordDataType;
 import ghidra.program.model.data.DataType;
-import ghidra.program.model.data.DataUtilities;
-import ghidra.program.model.data.DataUtilities.ClearDataMode;
 import ghidra.program.model.data.WordDataType;
 import ghidra.program.model.lang.LanguageCompilerSpecPair;
 import ghidra.program.model.listing.BookmarkType;
@@ -56,7 +54,6 @@ import ghidra.program.model.mem.MemoryAccessException;
 import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.mem.MemoryConflictException;
 import ghidra.program.model.symbol.SourceType;
-import ghidra.program.model.util.CodeUnitInsertionException;
 import ghidra.util.exception.CancelledException;
 import ghidra.util.exception.InvalidInputException;
 import ghidra.util.task.TaskMonitor;
@@ -646,12 +643,7 @@ public class SegaLoader extends AbstractProgramLoader {
 		}
 
 		private void markVectorsTable(VectorsTable vectors) {
-			try {
-				DataUtilities.createData(program, toAddr(0), vectors.toDataType(), -1, false,
-					ClearDataMode.CLEAR_ALL_UNDEFINED_CONFLICT_DATA);
-			}
-			catch (CodeUnitInsertionException e) {
-				log.appendException(e);
+			if (!SegaDataTypes.apply(program, toAddr(0), vectors.toDataType(), null, log)) {
 				return;
 			}
 
@@ -677,17 +669,10 @@ public class SegaLoader extends AbstractProgramLoader {
 		}
 
 		private void markHeader(GameHeader header) {
-			try {
-				DataUtilities.createData(program, toAddr(GameHeader.HEADER_ADDRESS),
-					header.toDataType(), -1, false,
-					ClearDataMode.CLEAR_ALL_UNDEFINED_CONFLICT_DATA);
-			}
-			catch (CodeUnitInsertionException e) {
-				log.appendException(e);
+			if (!SegaDataTypes.apply(program, toAddr(GameHeader.HEADER_ADDRESS),
+				header.toDataType(), "GAME_HEADER", log)) {
 				return;
 			}
-
-			label(GameHeader.HEADER_ADDRESS, "GAME_HEADER");
 
 			String description = String.format("%s\n%s  version %s  regions %s  controls %s\nROM 0x%06X-0x%06X  RAM 0x%06X-0x%06X  SRAM %s",
 				GameHeader.ascii(header.getDomesticName()),
@@ -767,14 +752,8 @@ public class SegaLoader extends AbstractProgramLoader {
 		}
 
 		private void markMarsUserHeader(MarsUserHeader marsUserHeader) {
-			try {
-				DataUtilities.createData(program, toAddr(0x3c0 + (hasSH2MemoryMap ? 0x880000L : 0)),
-					marsUserHeader.toDataType(), -1, false,
-					ClearDataMode.CLEAR_ALL_UNDEFINED_CONFLICT_DATA);
-			}
-			catch (CodeUnitInsertionException e) {
-				log.appendException(e);
-			}
+			SegaDataTypes.apply(program, toAddr(0x3c0 + (hasSH2MemoryMap ? 0x880000L : 0)),
+				marsUserHeader.toDataType(), null, log);
 		}
 
 		private void createNamedArray(long address, String name, int numElements, DataType type) {

@@ -65,7 +65,7 @@ class GameHeader implements StructConverter {
     
     @Override
     public DataType toDataType() {
-        Structure s = new StructureDataType("GameHeader", 0);
+        Structure s = new StructureDataType(SegaDataTypes.SEGA, "GameHeader", 0);
         
         s.add(STRING, 0x10, "ConsoleName", null);
         s.add(STRING, 0x10, "ReleaseDate", null);

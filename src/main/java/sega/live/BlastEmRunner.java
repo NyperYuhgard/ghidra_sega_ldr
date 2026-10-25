@@ -3,7 +3,9 @@ package sega.live;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -21,12 +23,39 @@ public class BlastEmRunner {
 
 	private static final long STOP_MILLIS = 2000;
 
+	/**
+	 * How the emulator is talked to about the memory it is running with. Both of the debuggers a
+	 * BlastEm process can host take over the terminal and start the machine stopped at the reset
+	 * vector, so choosing one of them changes what the process does with its three streams.
+	 */
+	public enum DebugChannel {
+
+		/** No debugger: the game runs as soon as the process is up and nothing is written to it. */
+		NONE,
+
+		/**
+		 * {@code -d -t}: the debugger of the emulator itself, spoken to with its own command lines.
+		 * The second switch is what keeps those lines on the pipes of this process.
+		 */
+		NATIVE,
+
+		/** {@code -D}, the remote stub read over its serial protocol on the process' own pipes. */
+		REMOTE;
+	}
+
 	private final Path workingDirectory;
 
 	/** What the emulator was asked to run, spelled the way a shell would take it. */
 	private String commandLine = "";
 
 	private Process process;
+
+	/** Where the text of an emulator that speaks packets instead is kept out of the pipe. */
+	private File stderrFile;
+
+	private DebugChannel channel = DebugChannel.NONE;
+
+	private OutputStream toEmulator;
 
 	public BlastEmRunner(String requestedDirectory) throws IOException {
 		if (requestedDirectory == null || requestedDirectory.isBlank()) {
@@ -46,8 +75,22 @@ public class BlastEmRunner {
 		return workingDirectory.resolve(name).toFile();
 	}
 
+	/** A file the emulator itself writes, like the memory image its debugger is asked to save. */
+	public File workingFile(String name) {
+		return workingDirectory.resolve(name).toFile();
+	}
+
 	public Path getWorkingDirectory() {
 		return workingDirectory;
+	}
+
+	public DebugChannel getChannel() {
+		return channel;
+	}
+
+	/** The text of an emulator running with {@code -D}: its messages cannot share the pipe. */
+	public File getErrorFile() {
+		return stderrFile;
 	}
 
 	/**
@@ -57,10 +100,11 @@ public class BlastEmRunner {
 	 * @param machine argument for {@code -m}, may be null to take the emulator's default
 	 * @param rom the image to run
 	 * @param extraArguments anything else the user types, split on spaces
-	 * @param outputSink receives every line the emulator prints
+	 * @param channel how the emulator is to be talked to about its memory
+	 * @param outputSink receives every line the emulator prints, except through {@code REMOTE}
 	 */
 	public void start(String executable, String machine, String rom, String extraArguments,
-			Consumer<String> outputSink) throws IOException {
+			DebugChannel channel, Consumer<String> outputSink) throws IOException {
 
 		List<String> command = new ArrayList<>();
 		command.add(executable);
@@ -69,6 +113,20 @@ public class BlastEmRunner {
 			command.add(machine);
 		}
 		command.add("-l");
+		switch (channel) {
+			case NATIVE:
+				command.add("-d");
+				// Without -t the debugger of the emulator refuses a pipe for its terminal: it closes
+				// the three streams of the process and carries its REPL off to a terminal window of
+				// its own, over two named pipes (terminal.c).
+				command.add("-t");
+				break;
+			case REMOTE:
+				command.add("-D");
+				break;
+			default:
+				break;
+		}
 		for (String argument : split(extraArguments)) {
 			command.add(argument);
 		}
@@ -77,10 +135,76 @@ public class BlastEmRunner {
 
 		ProcessBuilder builder = new ProcessBuilder(command);
 		builder.directory(workingDirectory.toFile());
-		builder.redirectErrorStream(true);
-		process = builder.start();
-		process.getOutputStream().close();
-		pumpOutput(outputSink);
+		if (channel == DebugChannel.REMOTE) {
+			// The stub answers on standard output and, from this point on, nothing else is printed
+			// there; the emulator's own text is sent where a person can still read it.
+			stderrFile = workingFile("blastem-text.log");
+			builder.redirectErrorStream(false);
+			builder.redirectError(stderrFile);
+			process = builder.start();
+		}
+		else {
+			builder.redirectErrorStream(true);
+			process = builder.start();
+			pumpOutput(outputSink);
+		}
+
+		this.channel = channel;
+		toEmulator = process.getOutputStream();
+		if (channel == DebugChannel.NONE) {
+			closeInput();
+		}
+	}
+
+	/** One line of the debugger's own command language, as the emulator would be typed at it. */
+	public void writeLine(String line) throws IOException {
+		writeBytes(line + "\n");
+	}
+
+	/**
+	 * One packet of the remote protocol. The stub ends a reply with its own framing, so nothing is
+	 * read here; the reader of {@link #rawOutput()} is what takes the answer.
+	 */
+	public void sendPacket(String command) throws IOException {
+		if (toEmulator == null) {
+			throw new IOException("the emulator is not running");
+		}
+		writeBytes("$" + command + "#" + checksum(command));
+	}
+
+	/** Bytes of the protocol as they are, without the newline a line of the REPL wants. */
+	public void writeBytes(String text) throws IOException {
+		if (toEmulator == null) {
+			throw new IOException("the emulator is not running");
+		}
+		toEmulator.write(text.getBytes(StandardCharsets.US_ASCII));
+		toEmulator.flush();
+	}
+
+	/** The bytes the stub puts on standard output: packets, and nothing a person would read. */
+	public InputStream rawOutput() {
+		return process == null ? null : process.getInputStream();
+	}
+
+	/** The two hex digits the protocol asks for, although this stub does not look at them. */
+	private static String checksum(String command) {
+		int sum = 0;
+		for (byte b : command.getBytes(StandardCharsets.US_ASCII)) {
+			sum = (sum + (b & 0xff)) & 0xff;
+		}
+		return String.format("%02x", sum);
+	}
+
+	private void closeInput() {
+		try {
+			if (toEmulator != null) {
+				toEmulator.close();
+			}
+		}
+		catch (IOException e) {
+			// A process that is going away does not care that its input is already gone.
+		}
+		toEmulator = null;
 	}
 
 	public String getCommandLine() {
@@ -171,6 +295,11 @@ public class BlastEmRunner {
 		}
 		Process running = process;
 		process = null;
+		channel = DebugChannel.NONE;
+		if (toEmulator != null) {
+			// A debugger left with its terminal open holds the process on the last write.
+			closeInput();
+		}
 		running.destroy();
 		try {
 			if (!running.waitFor(STOP_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS)) {

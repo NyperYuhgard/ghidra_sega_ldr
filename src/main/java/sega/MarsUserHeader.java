@@ -40,7 +40,7 @@ class MarsUserHeader implements StructConverter {
 
 	@Override
 	public DataType toDataType() {
-		Structure s = new StructureDataType("MARSUserHeader", 0);
+		Structure s = new StructureDataType(SegaDataTypes.SEGA, "MARSUserHeader", 0);
 
 		s.add(STRING, 0x10, "moduleName", null);
 		s.add(DWORD, 0x04, "version", null);

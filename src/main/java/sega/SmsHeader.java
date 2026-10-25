@@ -67,7 +67,7 @@ class SmsHeader implements StructConverter {
 
 	@Override
 	public DataType toDataType() {
-		Structure s = new StructureDataType("SmsHeader", 0);
+		Structure s = new StructureDataType(SegaDataTypes.SEGA, "SmsHeader", 0);
 
 		s.add(STRING, 0x8, "Signature", null);
 		s.add(WORD, 0x2, "Reserved", "reserved by Sega, never used; often the sequence number of the game on Game Gear");

@@ -2,9 +2,11 @@
 
 Ghidra loaders and analysis module for Sega cartridge and disc images: Mega Drive / Genesis and Sega
 32X, with room for the Sega CD program window when an image carries one, Master System and Game Gear,
-and the two 68000 processors of a Sega CD disc. Each one rebuilds the console's address space from the
-ROM or disc header, names the hardware registers, applies the header and vector-table structures, and
-can disassemble the program while the code is actually executed in the BlastEm emulator.
+SG-1000 and SC-3000, and the two 68000 processors of a Sega CD disc. Each one rebuilds the console's
+address space from the ROM or disc header, names the hardware registers, applies the header and
+vector-table structures, and can disassemble the program while the code is actually executed in the
+BlastEm emulator — memory the emulator's RAM holds and the image does not is asked of the emulator's
+own debugger.
 
 Based on the original loader by **Dr. MefistO** ([lab313ru/ghidra_sega_ldr](https://github.com/lab313ru/ghidra_sega_ldr));
 see [Credits](#credits) for authorship and for what this fork changes.
@@ -17,6 +19,7 @@ see [Credits](#credits) for authorship and for what this fork changes.
 
 - [What the loader builds](#what-the-loader-builds)
 - [Master System and Game Gear](#master-system-and-game-gear)
+- [SG-1000 and SC-3000 (Need Testing)](#sg-1000-and-sc-3000-need-testing)
 - [Sega CD](#sega-cd)
 - [Import options](#import-options)
 - [Header verification](#header-verification)
@@ -45,13 +48,15 @@ and address space.
 | `SegaLoader` — *Sega Mega Drive / Genesis Loader* | `SEGA` at `0x100` | `68000:BE:32:MC68020` |
 | | a 32X cartridge additionally carries `MARS CHECK MODE` at `0x3C0`, and is offered a second time | `SuperH:BE:32:SH-2` |
 | `SegaSmsLoader` — *Sega Master System / Game Gear Loader* | `TMR SEGA` at `0x7FF0`, else at `0x3FF0`, else at `0x1FF0` | `z80:LE:16:default` |
+| `SegaSg1000Loader` — *Sega SG-1000 / SC-3000 Loader* | nothing in the image: the extension names the machine, `.sg` and `.sg1` for the SG-1000, `.sc`, `.sf7` and `.sc3` for the SC-3000 | `z80:LE:16:default` |
 | `SegaCdMainLoader` — *Sega CD Loader (Main 68000)* | `SEGADISCSYSTEM` at `0x0` or `0x10` of an image, or a `.cue` sheet whose dump carries it | `68000:BE:32:MC68020` |
 | `SegaCdSubLoader` — *Sega CD Loader (Sub 68000)* | the same disc, and has to be asked for by name | `68000:BE:32:MC68020` |
 | `SegaCdMmdLoader` — *Sega CD Loader (Disc Member)* | one file of that disc's volume, which has to be named, with the address it is placed at | `68000:BE:32:MC68020` |
 
 Everything under this heading is created during import, before any analysis runs, and covers the 68000
-machines. The 8-bit ones have their own section: [Master System and Game Gear](#master-system-and-game-gear),
-and so does the disc: [Sega CD](#sega-cd).
+machines. The 8-bit ones have their own sections:
+[Master System and Game Gear](#master-system-and-game-gear) and
+[SG-1000 and SC-3000](#sg-1000-and-sc-3000-need-testing), and so does the disc: [Sega CD](#sega-cd).
 
 ### Cartridge and system memory
 
@@ -115,14 +120,23 @@ destination address, size, and the four SH-2 start/vector addresses) is applied 
 
 ### Structures applied to the listing
 
-- **`VectorsTable`** at `0x000`: the 64 longwords of the exception and interrupt table, each field
-  named (`SSP`, `Reset`, `BusErr`, `AdrErr`, `InvOpCode`, `DivBy0`, `Check`, `TrapV`, `GPF`,
-  `Trace`, `BadInt`, `BadIRQ`, `IRQ1`, `EXT`, `IRQ3`, `HBLANK`, `IRQ5`, `VBLANK`, `IRQ7`,
-  `Trap0`…`Trap15`, and the reserved slots).
-- **`GameHeader`** at `0x100`: `ConsoleName`, `ReleaseDate`, `DomesticName`, `InternationalName`,
-  `Version`, `Checksum`, `IoSupport`, `RomStart`, `RomEnd`, `RamStart`, `RamEnd`, `SramCode`,
-  `SramStart`, `SramEnd`, `Notes`, plus a `GAME_HEADER` label, a plate comment carrying title,
-  version, date, regions and controls, and the same title as the `ROM` block comment.
+Every structure this module knows lives in a category of its own — `/Sega`, and `/Sega/Sega CD` for the
+disc — so a project that holds two cartridges of one family keeps one definition of each rather than one
+per import.
+
+| Structure | Category | Where it goes | What it describes |
+| --- | --- | --- | --- |
+| `VectorsTable` | `/Sega` | `0x000` of a 68000 cartridge | the 64 longwords of the exception and interrupt table, each field named (`SSP`, `Reset`, `BusErr`, `AdrErr`, `InvOpCode`, `DivBy0`, `Check`, `TrapV`, `GPF`, `Trace`, `BadInt`, `BadIRQ`, `IRQ1`, `EXT`, `IRQ3`, `HBLANK`, `IRQ5`, `VBLANK`, `IRQ7`, `Trap0`…`Trap15`, and the reserved slots) |
+| `GameHeader` | `/Sega` | `0x100` | `ConsoleName`, `ReleaseDate`, `DomesticName`, `InternationalName`, `Version`, `Checksum`, `IoSupport`, `RomStart`, `RomEnd`, `RamStart`, `RamEnd`, `SramCode`, `SramStart`, `SramEnd`, `Notes`, plus a `GAME_HEADER` label, a plate comment carrying title, version, date, regions and controls, and the same title as the `ROM` block comment |
+| `MARSUserHeader` | `/Sega` | `0x3C0`, or `0x8803C0` when the same file is loaded as SH-2 | the 32X user header: module name, version, source and destination address, size, and the four SH-2 start and vector addresses |
+| `SmsHeader` | `/Sega` | the offset that carried `TMR SEGA` | the 8-bit cartridge header, with a `SMS_HEADER` label and its region, product code and declared size in the `ROM` block comment |
+| `VdpWindow` | `/Sega` | kept in the catalogue | the 18 bytes of the video chip's window at `0xC00000`, spelled with the names the block already carries |
+| `CdHeader` | `/Sega/Sega CD` | kept in the catalogue | the 512 bytes a disc puts in front of its data |
+
+The last two are registered and not laid over the listing on purpose: Ghidra refuses to define a data
+unit over memory that holds no bytes, and those two windows are a register file and the header sector of
+a disc. Each import says in the log where the bytes of the one it is about are, and the `VDP` block keeps
+its names either way.
 
 The vector table also seeds the first functions: every vector whose target lies in initialized,
 executable, non-volatile memory becomes a function named after the vector. A vector pointing at
@@ -186,6 +200,71 @@ one — a word sum over the file with the Sega header excluded, and a checksum t
 to `0x0000`, `0x4000` and `0x8000` instead of `0xFFFC`–`0xFFFF`. Both are reported, and neither aborts the
 import: only the export Master System BIOS refuses to start a game whose checksum does not match, so a
 Game Gear or Japanese image often carries a field the console never reads.
+
+## SG-1000 and SC-3000 (Need Testing)
+
+The two computers that came before the Master System have the Z80 in common and little else: the SG-1000
+decodes its cartridge and its ports one way, the SC-3000 another, and the latter has an 8255 next to the
+video chip. **Neither has been loaded from a real cartridge.** The map comes from the sources of an
+emulator, and the machine is taken from the extension of the file, because a cartridge of either computer
+puts nothing in front of its program: the image says nothing about the machine it was written for. Every
+import of this loader writes both facts into its log, and the comment of the `ROM` block ends with
+*map taken from the emulator's sources, not from a cartridge*.
+
+### The map, and the extension that picks it
+
+| Extension | Machine |
+| --- | --- |
+| `.sg`, `.sg1` | SG-1000 |
+| `.sc`, `.sf7`, `.sc3` | SC-3000 |
+
+A file with any other name is not offered this loader, and the two that read a header of their own keep
+whatever they recognise: an SG-1000 image left named `.sms` is imported as a Master System cartridge
+whose checksum nothing answers.
+
+| Block | Address | Content |
+| --- | --- | --- |
+| `ROM` | `0x0000`, the window ends at `0xBFFF` | the cartridge from file offset 0; readable, executable |
+| `ROM_ECHO`… | above it, in the same window | the mirrors the console makes when the image is shorter than the window it has to fill |
+| `RAM` | `0xC000`–`0xDFFF` | the 8 KiB of the machine; volatile, not executable |
+| `RAM_ECHO` | `0xE000`–`0xFFFF` | byte-mapped echo of that RAM, which is what the console answers with over its own top 16 KiB |
+| `ROM_BANK1`…`ROM_BANKn`, `MAPPER` | `0x400`, `0x4000`, `0x8000`, `0xFFFC` | only for an image bigger than the window, and then it is the Master System's paging that places it: the log says so in as many words, because neither of these computers had a mapper |
+
+The window is `0xC000` bytes and the console mirrors the cartridge over it with the mask of the nearest
+power of two above the length of the image, so a 16 KiB file arrives four times. Those repeats are placed
+as byte-mapped aliases rather than as copies, and the log counts them. The count stops at sixteen
+mirrors, and says that it stopped.
+
+`NMI_ISR` is created at `0x66` and `RST_08` … `RST_38` at the restart addresses, and the disassembly
+starts at `0x0000`: power on leaves the Z80 there, with interrupts held off, which is where a cartridge of
+either machine puts its first instruction.
+
+### Ports of each machine
+
+The port blocks are in the `io` space of the Z80 language, volatile and without bytes, exactly as in
+[Ports](#ports) for the Master System; what they hold is the range the emulator gives each chip, and the
+name of every address that one program of the time decodes by its number.
+
+| Machine | Block | Ports | Named |
+| --- | --- | --- | --- |
+| SG-1000 | `CONTROLLER` | `0x00`–`0x3F` | — an odd address writes both controller ports and latches the raster counter |
+| | `PSG` | `0x40`–`0x7F` | `HV_COUNTER_H` at `0x40`, `HV_COUNTER_L` at `0x41` — any address of the range writes the tone generator |
+| | `VDP` | `0x80`–`0xBF` | `VDP_DATA` at `0x80`, `VDP_CTRL` at `0x81` — the chip is decoded by the parity of the address |
+| | `CONTROLLER_DATA` | `0xC0`–`0xFF` | `IO_DATA_AB_ALT` at `0xC0`, `IO_CTRL_ALT` at `0xC1`, `IO_DATA_AB` at `0xDC`, `IO_CTRL` at `0xDD` — anything else reads as `0xFF` |
+| SC-3000 | `PPI_VDP` | `0x00`–`0x1F` | the 8255 read with the video data port wired into it |
+| | `VDP_PSG` | `0x20`–`0x3F` | the video chip by parity, and a write reaches the tone generator with it |
+| | `PPI_PSG` | `0x40`–`0x5F` | the 8255 by its two low bits, and a write reaches the tone generator with it |
+| | `PSG` | `0x60`–`0x7F` | any address writes the tone generator, and nothing is read here |
+| | `PPI_VDP2` | `0x80`–`0x9F` | the 8255 read with the video data port wired into it, and written through both |
+| | `VDP` | `0xA0`–`0xBF` | `VDP_DATA` at `0xA0`, `VDP_CTRL` at `0xA1` — the one range that holds nothing else |
+| | `PPI` | `0xD0`–`0xFF` | the 8255's port A, port B, port C and control register, in that order and again every four addresses |
+
+The 8255 is selected by two address lines rather than by a number of its own, which is why its registers
+are described in the comment of the block and not labelled four times: no image of this family says which
+of those addresses a given program uses.
+
+`-loader-hw-registers` decides whether the port blocks are built at all, and `-loader-verify` has nothing
+to check here — the log of a load says that too, rather than going quiet.
 
 ## Sega CD
 
@@ -358,8 +437,8 @@ can be set from a command line, so an import needs no interaction at all.
 | --- | --- | --- | --- | --- |
 | Genesis | `-loader-32x` | Create Sega 32X segments | on for a 32X cartridge or an SH-2 load, off otherwise | the 32X blocks and registers above |
 | Genesis | `-loader-sega-cd` | Create Sega CD (EPA) segment | off | the `EPA` window at `0x400000` |
-| all | `-loader-hw-registers` | Create hardware register blocks | on | `Z80`, `SYS*`, `FDC`, `TIME`, `TMSS`, `VDP`, `RAM` and its mirror, the `VDP`, `PSG`, `CONTROLLER`, `IO_CONTROL` and `MAPPER` blocks of the 8-bit machines, or the `GATE_ARRAY` and sound registers of a disc |
-| all | `-loader-verify` | Verify the ROM header | on | the checks in [Header verification](#header-verification) |
+| all | `-loader-hw-registers` | Create hardware register blocks | on | `Z80`, `SYS*`, `FDC`, `TIME`, `TMSS`, `VDP`, `RAM` and its mirror, the `VDP`, `PSG`, `CONTROLLER`, `IO_CONTROL` and `MAPPER` blocks of the 8-bit machines, the port blocks of an SG-1000 or SC-3000, or the `GATE_ARRAY` and sound registers of a disc |
+| all | `-loader-verify` | Verify the ROM header | on | the checks in [Header verification](#header-verification); an SG-1000 or SC-3000 cartridge carries no header, so the answer there is that there is nothing to check |
 | Genesis | `-loader-sram-file <path>` | Backup RAM contents file (.srm / .sram) | empty | fills `BACKUP_RAM` from a save file |
 | SMS / GG | `-loader-cart-ram-file <path>` | Cartridge RAM contents file (.sav / .sms) | empty | fills the `CART_RAM` overlay of `0x8000` from a save file |
 | Sega CD | `-loader-cd-bios <path>` | CD BIOS image the console runs before the disc (.bin) | empty | fills `BIOS_ROM` and its alias in the console's view |
@@ -377,6 +456,8 @@ analyzeHeadless /tmp/proj name -import game.bin -loader SegaLoader \
 
 analyzeHeadless /tmp/proj name -import game.sms -loader SegaSmsLoader \
     -loader-hw-registers true -loader-verify true
+
+analyzeHeadless /tmp/proj name -import cartridge.sg -loader SegaSg1000Loader -loader-hw-registers true
 
 analyzeHeadless /tmp/proj name -import game.cue -loader SegaCdMainLoader \
     -loader-cd-bios bios_CD_E.bin -loader-hw-registers true -loader-verify true
@@ -458,6 +539,7 @@ addresses outside the memory map, and addresses in blocks that hold no bytes yet
 | `BlastEm` | the emulator binary; prefilled with the first `blastem` found on the PATH |
 | `Machine` | the console to emulate, passed as `-m`; it starts on *Detect from the image* and the list, with what each one yields, is below |
 | `Disassemble` | how a batch of addresses becomes code; see below |
+| `Memory` | whether Ghidra asks the emulator for the memory its machine runs on: *leave RAM as it is*, *fill from its debugger (-d)* or *fill from the remote stub (-D)*; see [Filling RAM from the emulator](#filling-ram-from-the-emulator) |
 | `Trace folder` | the directory BlastEm runs in, and therefore the one that holds the trace the panel reads |
 | `Extra args` | anything else for the emulator, split the way a shell splits it |
 | `RAM too` | also take the addresses that land in work or battery RAM; useful for patchers and routines the game loads into RAM, noisy otherwise |
@@ -465,9 +547,11 @@ addresses outside the memory map, and addresses in blocks that hold no bytes yet
 | `pause` | keep the emulator running and keep counting, without touching the program |
 | `Start` / `Stop` | begin or end the session; Stop hands the analyzers everything the session made outside their queue |
 | `Ingest log…` | choose a trace left behind by an earlier run and disassemble all of it |
+| `Fill RAM…` | ask the emulator, stopped in its debugger, for the memory windows this session's trace reached; it is dead until a session is running and `Memory` is not *leave RAM as it is* |
 
 The emulator is started as `blastem [-m machine] -l [extra args] <rom>` in the trace folder; the `-m`
-switch is left out on the first row of the list below. The exact command is written to the panel log, and
+switch is left out on the first row of the list below. A chosen `Memory` channel adds `-d -t` or `-D` to
+that command line. The exact command is written to the panel log, and
 so is the exit code whenever the process dies before Stop is pressed. Stop terminates it, and so does
 closing the program, switching to another program, or leaving the tool, so no orphan process is left
 behind.
@@ -503,7 +587,7 @@ Game Gear by the extension of the file, so keep a Game Gear image named `.gg`.
 
 The machine selection only feeds `-m`: the loader is what decides the language and the memory map of
 the program being filled, so what you run has to be the same console the program was imported as, and
-a format with no loader support yet — an SG-1000 cartridge, say — has nothing for the trace to land in.
+a core BlastEm does not trace — the two SH-2 of a 32X — has nothing for a trace to land in.
 
 **Disassemble** is read once, when Start is pressed:
 
@@ -521,7 +605,8 @@ the immediate route and leaves the rest for a later analysis pass.
 
 Addresses that land in work or battery RAM are ignored unless **RAM too** is on, and even then they
 become code only once the emulator's RAM has been loaded into the program: Ghidra cannot disassemble
-a block that holds no bytes.
+a block that holds no bytes. [Filling RAM from the emulator](#filling-ram-from-the-emulator) is how
+those bytes arrive.
 
 Start the session once auto-analysis has finished. The analyzer and the trace both want the program
 locked for writing, and running them together is slower than either alone.
@@ -533,18 +618,60 @@ analyzeHeadless /tmp/proj name -process game.bin -noanalysis \
     -scriptPath ghidra_scripts -postScript SegaIngestAddressLog.java address.log
 ```
 
+### Filling RAM from the emulator
+
+A block that holds no bytes is what a listing of work RAM reads as `??`: Ghidra needs something to
+disassemble, and the cartridge or disc an import read says nothing about what the machine keeps there.
+The **Memory** row chooses whether Ghidra asks the emulator itself, by one of the two debug channels
+BlastEm has always had.
+
+| Choice | Switches | How the bytes come back |
+| --- | --- | --- |
+| *leave RAM as it is* | none | nothing is asked; this is how the panel ran before, and how it runs a game straight away |
+| *fill from its debugger* | `-d -t` | a `save/b` of the window into a file in the trace folder, read back once it stops growing |
+| *fill from the remote stub* | `-D` | `$m` packets, at most 255 byte(s) each, which is all one reply of that stub can carry |
+
+Both debuggers take the machine over and leave it stopped at the reset vector, so the panel immediately
+tells it to run — `c` on the debugger's own terminal, the `c` packet on the stub — and the game plays from
+there. `-t` is not decoration: without it the emulator's debugger refuses a pipe for its terminal, closes
+the three streams of the process and carries its prompt off to an `xterm` of its own, over two named
+pipes. `-D` is the other way round and silences the emulator's text, which goes to `blastem-text.log` in
+the trace folder; the trace itself is unaffected, because `-l` is written by the emulator either way.
+
+**Fill RAM…** then asks for the windows this session's trace actually reached: every executable block of
+the program's own address space that holds no bytes and that the machine ran in at least once. A window
+that fits in 64 KiB is asked for whole; a bigger one gives up the span the trace touched and the log says
+that the rest of it stays unknown. The bytes land on the map in one transaction:
+
+- a block covered whole becomes initialized under the same name, with its permissions and its labels;
+- a block covered in part is split around the dump, the pieces named as the disc members name theirs
+  (`NAME`, then `NAME_2`), and the labels inside the window are put back where they were;
+- a block that already carries bytes of the image is left alone, and counted as such: a dump of RAM cannot
+  improve what the image says.
+
+The machine has to be standing in its debugger for either channel to answer, which is what the `u` key
+does while the game plays, and what a breakpoint does on its own. A request that gets nothing says so,
+and names the key to press; nothing is guessed and no bytes are invented. With the stub, only the two
+packets it is known to handle are ever sent — a command it does not recognise ends the emulator.
+
+After the bytes land, the addresses of that window are looked at again and handed to the same ingest the
+session uses, so the log closes with what the dump was worth: how many of the addresses it covers now have
+something to disassemble, and how many were already code.
+
 ## Requirements and supported targets
 
 - Ghidra **12.1.4**, the version whose loader API this module implements. Targets: any image whose
   header says `SEGA`, which covers Mega Drive / Genesis cartridges, 32X cartridges in either
   architecture, and images long enough to carry a Sega CD program region; any image carrying the
-  `TMR SEGA` cartridge header of a Master System or Game Gear game; and a Sega CD disc, as a track of
-  2048 or 2352 byte sectors, or as the `.cue` sheet that describes one. The BIOS of the drive and the
-  save of a disc are separate files, given by the options of
+  `TMR SEGA` cartridge header of a Master System or Game Gear game; an SG-1000 or SC-3000 cartridge,
+  which is named by the extension of the file because the image itself carries nothing to look for;
+  and a Sega CD disc, as a track of 2048 or 2352 byte sectors, or as the `.cue` sheet that describes
+  one. The BIOS of the drive and the save of a disc are separate files, given by the options of
   [Import options](#import-options).
 - A JDK, for building. Ghidra 12.1.4 targets Java 21, and the module is compiled for that release.
 - BlastEm, only for live disassembly. The panel starts it as a child process, so it needs a display
-  the emulator can open.
+  the emulator can open. Filling RAM asks one of its two debug channels, so it wants a build that
+  carries `-d` and `-D`; tracing alone works without them.
 
 ## Building
 
@@ -596,7 +723,7 @@ To use the live panel, open `File -> Configure` in the tool that holds your prog
 
 ```
 src/main/java/sega/      loaders, headers, structures, checksum, analyzer
-src/main/java/sega/live/ the live trace: emulator process, log reader, ingest commands, plugin and panel
+src/main/java/sega/live/ the live trace: emulator process, log reader, debug channels, ingest commands, plugin and panel
 ghidra_scripts/          scripts that ship with the module
 data/                    reserved for runtime data (Sleigh specifications, data-type archives)
 src/main/help/           Ghidra help topic
@@ -606,8 +733,11 @@ build.gradle             module build
 
 ## Known limits
 
-- SG-1000 and SC-3000 images are not recognized yet: their cartridges carry no header, so a loader
-  for them would have to be chosen by hand and given the size of the image.
+- The SG-1000 and SC-3000 support is written and compiles, and it has **not been loaded from a real
+  cartridge**: the map is what the sources of an emulator say, and the machine is what the extension of
+  the file says, since the image itself carries neither a header nor anything else that names its
+  computer. Every import repeats this in its log. An image bigger than the `0xC000` byte window is placed
+  by the Master System's mapper, which neither computer had, and the log says that too.
 - Of a Sega CD disc the loader reads the header sector and the two programs the header places, which is
   what the boot stage itself reaches before a game is in memory, and the list of files the volume of the
   disc carries. Everything else stays on the disc until a member is imported by name or the live trace
@@ -643,6 +773,9 @@ build.gradle             module build
   with is not asked for.
 - Code that runs from work RAM is reported but not disassembled until the emulator's RAM is in the
   program, because Ghidra needs bytes to disassemble.
+  [Filling RAM from the emulator](#filling-ram-from-the-emulator) brings those bytes over, one window at a
+  time and only while the machine stands in its debugger; a window of more than 64 KiB gives up the span
+  the trace reached rather than the whole of itself, and what the machine never ran there stays unknown.
 - The trace tells Ghidra where code starts, not what the code does: functions, references and types
   still come from the analyzers, which is why *auto analysis* gives the fuller listing.
 - A checksum mismatch never fails the import. A patched or trimmed ROM keeps the value of the image
@@ -669,6 +802,9 @@ build.gradle             module build
 - Vector-table functions are only created where the vector reaches runnable code.
 - A loader for the Master System and Game Gear: the `TMR SEGA` header, the paged cartridge windows, the
   mapper registers, the console ports, and the checksum rules those cartridges use.
+- A loader for the SG-1000 and SC-3000, marked as needing testing: the cartridge mirrored over the window
+  the console decodes, the 8 KiB of system RAM echoed over its own top, and the ports of each machine as
+  the emulator gives them their ranges.
 - Loaders for the two processors of a Sega CD disc: the disc and its sheet read for the programs the
   header declares, the address space of each processor as the ASIC shows it, the gate array, the sound
   memory and the battery RAM named, and the entries of the boot stage labelled.
@@ -678,4 +814,8 @@ build.gradle             module build
   about it and the memory windows cut around it.
 - The `BlastEm Live` plugin, the log reader and the batched ingest commands behind it, and
   `SegaIngestAddressLog` for working offline.
+- The structures the imports lay over an image live in a category of their own, `/Sega` and
+  `/Sega/Sega CD`, so a project holds one definition of each rather than one per import.
+- The live panel can ask the emulator for the memory its machine runs on, by its own debugger or by the
+  remote stub, and puts those bytes where the listing showed `??`.
 

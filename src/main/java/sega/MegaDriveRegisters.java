@@ -105,7 +105,7 @@ final class MegaDriveRegisters {
 		block("TMSS", 0xA14000L, 4, true, true, false, true);
 		data(0xA14000L, "IO_TMSS", DWordDataType.dataType);
 
-		block("VDP", 0xC00000L, 2 * 9, true, true, false, true);
+		block("VDP", VdpWindow.BASE_ADDRESS, VdpWindow.SIZE, true, true, false, true);
 		data(0xC00000L, "VDP_DATA", WordDataType.dataType);
 		data(0xC00002L, "VDP__DATA", WordDataType.dataType);
 		data(0xC00004L, "VDP_CTRL", WordDataType.dataType);
@@ -115,6 +115,14 @@ final class MegaDriveRegisters {
 		data(0xC0000CL, "VDP___CNTR", WordDataType.dataType);
 		data(0xC0000EL, "VDP____CNTR", WordDataType.dataType);
 		data(0xC00011L, "VDP_PSG", ByteDataType.dataType);
+
+		// Ghidra refuses to define a data unit over a block that carries no bytes, and a register
+		// window never carries any of the image, so the layout waits in the catalogue.
+		SegaDataTypes.register(program, VdpWindow.toDataType());
+		log.appendMsg(String.format(
+			"VdpWindow describes the %d bytes at 0x%X and is kept in /Sega: those addresses belong "
+				+ "to registers, which hold nothing an image could give",
+			VdpWindow.SIZE, VdpWindow.BASE_ADDRESS));
 	}
 
 	private void block(String name, long address, long size, boolean read, boolean write,

@@ -65,6 +65,9 @@ public class BlastEmLiveProvider extends ComponentProviderAdapter {
 
 		void ingestFile(String path, BlastEmLiveProvider settings);
 
+		/** Ask the running emulator for the memory its machine is standing on. */
+		void fillRam();
+
 		/** The filter changed: addresses already passed over may deserve a second look. */
 		void settingsChanged();
 	}
@@ -77,6 +80,7 @@ public class BlastEmLiveProvider extends ComponentProviderAdapter {
 	private JTextField executableField;
 	private JComboBox<String> machineBox;
 	private JComboBox<String> modeBox;
+	private JComboBox<String> memoryBox;
 	private JTextField workingDirectoryField;
 	private JTextField argumentsField;
 	private JCheckBox ramCheck;
@@ -88,11 +92,13 @@ public class BlastEmLiveProvider extends ComponentProviderAdapter {
 	private JButton browseExecutableButton;
 	private JButton browseFolderButton;
 	private JButton ingestButton;
+	private JButton fillButton;
 	private JTextArea logArea;
 	private JLabel countsLabel;
 
 	private String selectedMachineId = "";
 	private IngestCommand.Mode selectedMode = IngestCommand.Mode.ANALYSIS_QUEUE;
+	private BlastEmRunner.DebugChannel selectedChannel = BlastEmRunner.DebugChannel.NONE;
 
 	/** Why the image in the ROM field is left unrun, or null when the panel may start it. */
 	private String refusal;
@@ -190,6 +196,23 @@ public class BlastEmLiveProvider extends ComponentProviderAdapter {
 			+ "a while to look complete.");
 		modeBox.addActionListener(e -> selectedMode = modeAt(modeBox.getSelectedIndex()));
 
+		memoryBox = new JComboBox<>(MEMORY_LABELS);
+		memoryBox.setToolTipText("Whether Ghidra asks the emulator for the memory its machine runs on.\n"
+			+ "  · leave as it is: the emulator runs the game straight away, and a RAM window stays\n"
+			+ "    without bytes, which is what a listing of work RAM reads as ??.\n"
+			+ "  · its debugger (-d): BlastEm starts stopped at the reset vector and waits for commands\n"
+			+ "    on its own terminal; Ghidra resumes it and later asks it to save the windows to files.\n"
+			+ "  · the remote stub (-D): the same, over the serial protocol on the process' pipes.\n"
+			+ "Either of the two stops the game until the emulator is resumed, and with -D BlastEm\n"
+			+ "silences its own text, so what it means to say goes to a file in the trace folder.\n"
+			+ "Fill RAM… then asks for the windows this session's trace actually reached.");
+		memoryBox.addActionListener(e -> {
+			selectedChannel = channelAt(memoryBox.getSelectedIndex());
+			if (fillButton != null) {
+				fillButton.setEnabled(running && selectedChannel != BlastEmRunner.DebugChannel.NONE);
+			}
+		});
+
 		browseRomButton = new JButton("…");
 		browseRomButton.setToolTipText(
 			"The image BlastEm runs; it is filled with the file this program was imported from.");
@@ -255,6 +278,16 @@ public class BlastEmLiveProvider extends ComponentProviderAdapter {
 		at.gridx = 0;
 		at.gridy = 4;
 		at.weightx = 0;
+		form.add(new JLabel("Memory"), at);
+		at.gridx = 1;
+		at.gridwidth = 2;
+		at.weightx = 1;
+		form.add(memoryBox, at);
+		at.gridwidth = 1;
+
+		at.gridx = 0;
+		at.gridy = 5;
+		at.weightx = 0;
 		form.add(new JLabel("Trace folder"), at);
 		at.gridx = 1;
 		at.weightx = 1;
@@ -264,7 +297,7 @@ public class BlastEmLiveProvider extends ComponentProviderAdapter {
 		form.add(browseFolderButton, at);
 
 		at.gridx = 0;
-		at.gridy = 5;
+		at.gridy = 6;
 		at.weightx = 0;
 		form.add(new JLabel("Extra args"), at);
 		at.gridx = 1;
@@ -291,6 +324,11 @@ public class BlastEmLiveProvider extends ComponentProviderAdapter {
 		stopButton.setEnabled(false);
 		ingestButton = new JButton("Ingest log…");
 		ingestButton.addActionListener(e -> chooseTraceLog());
+		fillButton = new JButton("Fill RAM…");
+		fillButton.setToolTipText("Ask the emulator, stopped in its debugger, for the memory windows "
+			+ "this session's trace reached, and put those bytes where the listing shows them as empty.");
+		fillButton.addActionListener(e -> controls.fillRam());
+		fillButton.setEnabled(false);
 
 		JPanel buttons = new JPanel();
 		buttons.setLayout(new BoxLayout(buttons, BoxLayout.X_AXIS));
@@ -299,6 +337,8 @@ public class BlastEmLiveProvider extends ComponentProviderAdapter {
 		buttons.add(stopButton);
 		buttons.add(Box.createHorizontalStrut(6));
 		buttons.add(ingestButton);
+		buttons.add(Box.createHorizontalStrut(6));
+		buttons.add(fillButton);
 
 		JPanel checks = new JPanel();
 		checks.setLayout(new BoxLayout(checks, BoxLayout.X_AXIS));
@@ -309,10 +349,10 @@ public class BlastEmLiveProvider extends ComponentProviderAdapter {
 		checks.add(pauseCheck);
 
 		at.gridx = 0;
-		at.gridy = 6;
+		at.gridy = 7;
 		at.gridwidth = 3;
 		form.add(checks, at);
-		at.gridy = 7;
+		at.gridy = 8;
 		form.add(buttons, at);
 		at.gridwidth = 1;
 
@@ -428,6 +468,11 @@ public class BlastEmLiveProvider extends ComponentProviderAdapter {
 		return ramCheck != null && ramCheck.isSelected();
 	}
 
+	/** Whether the emulator is to be asked for the memory its machine runs on, and how. */
+	public BlastEmRunner.DebugChannel getMemoryChannel() {
+		return selectedChannel;
+	}
+
 	public boolean isFollowingPc() {
 		return followPcCheck != null && followPcCheck.isSelected();
 	}
@@ -443,9 +488,12 @@ public class BlastEmLiveProvider extends ComponentProviderAdapter {
 		}
 		startButton.setEnabled(!running && refusal == null);
 		stopButton.setEnabled(running);
+		fillButton.setEnabled(
+			running && selectedChannel != BlastEmRunner.DebugChannel.NONE);
 		romField.setEnabled(!running);
 		machineBox.setEnabled(!running);
 		modeBox.setEnabled(!running);
+		memoryBox.setEnabled(!running);
 		executableField.setEnabled(!running);
 		workingDirectoryField.setEnabled(!running);
 		argumentsField.setEnabled(!running);
@@ -492,6 +540,17 @@ public class BlastEmLiveProvider extends ComponentProviderAdapter {
 
 	private static final String[] MODE_LABELS = { "auto analysis", "immediate (experimental)",
 		"disassemble only (experimental)" };
+
+	private static final String[] MEMORY_LABELS = { "leave RAM as it is",
+		"fill from its debugger (-d)", "fill from the remote stub (-D)" };
+
+	private static BlastEmRunner.DebugChannel channelAt(int index) {
+		return switch (index) {
+			case 1 -> BlastEmRunner.DebugChannel.NATIVE;
+			case 2 -> BlastEmRunner.DebugChannel.REMOTE;
+			default -> BlastEmRunner.DebugChannel.NONE;
+		};
+	}
 
 	private static String[] modeLabels() {
 		return MODE_LABELS.clone();
