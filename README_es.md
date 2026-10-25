@@ -8,6 +8,11 @@ nombre a los registros del hardware, aplica las estructuras de cabecera y de tab
 desensamblar el programa mientras el código se ejecuta de verdad en el emulador BlastEm — la memoria que
 el RAM del emulador guarda y que la imagen no dice se pide al depurador del propio emulador.
 
+Hasta dónde llega cada una de esas consolas: la Mega Drive / Genesis y la Master System y Game Gear son
+el terreno contra el que se ha comprobado el módulo, con imágenes de cada una; el Sega CD es **soporte
+experimental de momento**; y la SG-1000 y la SC-3000 nunca se han leído de un cartucho de verdad — su
+[epígrafe](#sg-1000-y-sc-3000-falta-probar) lo dice con todas las letras.
+
 Parte del cargador original de **Dr. MefistO** ([lab313ru/ghidra_sega_ldr](https://github.com/lab313ru/ghidra_sega_ldr));
 ver [Créditos](#créditos) para la autoría y para lo que cambia este fork.
 
@@ -215,7 +220,8 @@ al chip de vídeo. **Ninguna de las dos se ha cargado desde un cartucho de verda
 fuentes de un emulador, y la máquina sale de la extensión del fichero, porque un cartucho de cualquiera de
 estos ordenadores no pone nada delante de su programa: la imagen no dice para qué máquina se escribió.
 Cada importación de este cargador escribe las dos cosas en su log, y el comentario del bloque `ROM` acaba
-con *mapa tomado de las fuentes del emulador, no de un cartucho*.
+con *mapa tomado de las fuentes del emulador, no de un cartucho*. Tampoco se han metido en una ventana: lo
+que está medido es la importación por línea de órdenes de las imágenes que este repositorio se fabrica.
 
 ### El mapa, y la extensión que lo escoge
 
@@ -278,6 +284,11 @@ tiene nada que comprobar aquí; el log de la carga dice también eso, en vez de 
 Un disco son dos programas en dos procesadores 68000 que llegan a las mismas memorias a través de un solo
 ASIC, y cada uno ve esas memorias en una dirección distinta. Así que un disco tiene dos vistas, y lo que
 decide entre ellas es el cargador que la importación nombre.
+
+**El soporte del Sega CD es experimental de momento.** El disco, la hoja `.cue` que lo describe, el volumen
+de ficheros que lleva y los dos espacios de direcciones están escritos, y están medidos por línea de órdenes
+contra un disco de verdad; lo que no han tenido es el uso en una ventana que han tenido los cargadores de
+cartucho.
 
 ### Dos cargadores, un disco
 
@@ -680,6 +691,10 @@ Después de llegar los bytes, las direcciones de esa ventana se vuelven a mirar 
 ingestión que usa la sesión, así que el log cierra con lo que valió el volcado: cuántas de las direcciones
 que cubre tienen ya algo que desensamblar, y cuántas ya eran código.
 
+Lo medido de todo esto son los dos canales pedidos por línea de órdenes sobre una misma ventana, que
+responden con los mismos bytes. El camino por la ventana —elegir **Memory**, pulsar **Fill RAM…**— todavía
+no se ha recorrido.
+
 ## Requisitos y objetivos admitidos
 
 - Ghidra **12.1.4**, la versión cuya API de cargadores implementa este módulo. Objetivos: cualquier
@@ -689,7 +704,9 @@ que cubre tienen ya algo que desensamblar, y cuántas ya eran código.
   Game Gear; un cartucho de SG-1000 o de SC-3000, que nombra la extensión del fichero porque la imagen en
   sí no lleva nada que buscar; y un disco Sega CD, como una pista de sectores de 2048 o 2352 bytes, o como
   la hoja `.cue` que describe una. La BIOS de la unidad y la partida guardada de un disco son ficheros
-  aparte, dados por las opciones de [Opciones de importación](#opciones-de-importación).
+  aparte, dados por las opciones de [Opciones de importación](#opciones-de-importación). De esa lista, el
+  Sega CD es experimental de momento, y la SG-1000 y la SC-3000 no se han leído de un cartucho:
+  [Límites conocidos](#límites-conocidos) guarda la cuenta de lo que no se ha probado.
 - Un JDK, para compilar. Ghidra 12.1.4 apunta a Java 21, y el módulo se compila para esa versión.
 - BlastEm, solo para el desensamblado en vivo. La ventana lo arranca como proceso hijo, así que necesita
   una pantalla que el emulador pueda abrir. Rellenar la RAM pide uno de sus dos canales de depuración, así
@@ -755,11 +772,15 @@ build.gradle             compilación del módulo
 
 ## Límites conocidos
 
-- El soporte de SG-1000 y SC-3000 está escrito y compila, y **no se ha cargado desde un cartucho de
-  verdad**: el mapa es lo que dicen las fuentes de un emulador, y la máquina es lo que dice la extensión del
-  fichero, ya que la imagen no lleva cabecera ni nada más que nombre a su ordenador. Cada importación lo
-  repite en su log. Una imagen más grande que la ventana de `0xC000` bytes la coloca el mapper del Master
-  System, que ninguna de las dos máquinas tenía, y el log también lo dice.
+- **El Sega CD es soporte experimental de momento.** El disco, la hoja `.cue` que lo describe, su volumen de
+  ficheros y los dos espacios de direcciones están escritos y medidos contra un disco de verdad por línea de
+  órdenes; lo que no han tenido es el uso en una ventana que han tenido los cargadores de cartucho, y la
+  ventana de un disco sigue la traza de un procesador cada vez.
+- El soporte de SG-1000 y SC-3000 está escrito y compila, y **no se ha cargado desde un cartucho de verdad,
+  ni se ha llevado a una ventana**: el mapa es lo que dicen las fuentes de un emulador, y la máquina es lo
+  que dice la extensión del fichero, ya que la imagen no lleva cabecera ni nada más que nombre a su
+  ordenador. Cada importación lo repite en su log. Una imagen más grande que la ventana de `0xC000` bytes la
+  coloca el mapper del Master System, que ninguna de las dos máquinas tenía, y el log también lo dice.
 - De un disco Sega CD el cargador lee el sector de cabecera y los dos programas que la cabecera coloca, que
   es hasta donde llega la propia etapa de arranque antes de que haya un juego en memoria, y la lista de los
   ficheros que el volumen del disco lleva. Todo lo demás —los datos de un juego, y el resto de lo que su
@@ -799,7 +820,9 @@ build.gradle             compilación del módulo
   emulador esté en el programa, porque Ghidra necesita bytes para desensamblar.
   [Rellenar la RAM desde el emulador](#rellenar-la-ram-desde-el-emulador) trae esos bytes, una ventana cada
   vez y solo mientras la máquina está parada en su depurador; una ventana de más de 64 KiB entrega el trozo
-  que la traza tocó en lugar de toda ella, y lo que la máquina no ejecutó ahí sigue sin conocerse.
+  que la traza tocó en lugar de toda ella, y lo que la máquina no ejecutó ahí sigue sin conocerse. Los dos
+  canales están medidos por línea de órdenes y responden con los mismos bytes; la fila `Memory` y el botón
+  `Fill RAM…` de la ventana todavía no se han usado.
 - La traza dice dónde empieza el código, no qué hace: las funciones, las referencias y los tipos siguen
   saliendo de los analizadores, y por eso *auto analysis* da el listado más completo.
 - Un checksum que no cuadra nunca falla la importación. Un ROM parcheado o recortado conserva el valor de

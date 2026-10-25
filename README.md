@@ -8,6 +8,11 @@ vector-table structures, and can disassemble the program while the code is actua
 BlastEm emulator — memory the emulator's RAM holds and the image does not is asked of the emulator's
 own debugger.
 
+How far each of these has been taken: the Mega Drive / Genesis and the Master System and Game Gear are
+the ground the module has been checked against, with images of each; the Sega CD is **experimental
+support for the moment**; and the SG-1000 and SC-3000 have never been read from a real cartridge — their
+[section](#sg-1000-and-sc-3000-need-testing) says so in as many words.
+
 Based on the original loader by **Dr. MefistO** ([lab313ru/ghidra_sega_ldr](https://github.com/lab313ru/ghidra_sega_ldr));
 see [Credits](#credits) for authorship and for what this fork changes.
 
@@ -209,7 +214,8 @@ video chip. **Neither has been loaded from a real cartridge.** The map comes fro
 emulator, and the machine is taken from the extension of the file, because a cartridge of either computer
 puts nothing in front of its program: the image says nothing about the machine it was written for. Every
 import of this loader writes both facts into its log, and the comment of the `ROM` block ends with
-*map taken from the emulator's sources, not from a cartridge*.
+*map taken from the emulator's sources, not from a cartridge*. And neither has been carried into a window:
+what has been measured is the headless import of the images this repository makes for itself.
 
 ### The map, and the extension that picks it
 
@@ -271,6 +277,11 @@ to check here — the log of a load says that too, rather than going quiet.
 A disc is two programs on two 68000 processors that reach the same memories through one ASIC, and each
 of them sees those memories at a different address. So a disc gets two views, and the loader an import
 names is what chooses between them.
+
+**The support of a Sega CD is experimental for the moment.** The disc, the sheet that describes it, the
+volume of files it carries and the two address spaces are written, and they are measured by the command
+line against a real disc; what they have not had is the use in a window that the cartridge loaders have
+had.
 
 ### Two loaders, one disc
 
@@ -658,6 +669,10 @@ After the bytes land, the addresses of that window are looked at again and hande
 session uses, so the log closes with what the dump was worth: how many of the addresses it covers now have
 something to disassemble, and how many were already code.
 
+What is measured of all this are the two channels asked by the command line over one and the same window,
+which answer with the same bytes. The path through the panel — choosing **Memory**, pressing
+**Fill RAM…** — has not been walked in a window yet.
+
 ## Requirements and supported targets
 
 - Ghidra **12.1.4**, the version whose loader API this module implements. Targets: any image whose
@@ -667,7 +682,9 @@ something to disassemble, and how many were already code.
   which is named by the extension of the file because the image itself carries nothing to look for;
   and a Sega CD disc, as a track of 2048 or 2352 byte sectors, or as the `.cue` sheet that describes
   one. The BIOS of the drive and the save of a disc are separate files, given by the options of
-  [Import options](#import-options).
+  [Import options](#import-options). Of that list the Sega CD is experimental for the moment, and the
+  SG-1000 and the SC-3000 have not been read from a cartridge: [Known limits](#known-limits) keeps the
+  account of what has not been tested.
 - A JDK, for building. Ghidra 12.1.4 targets Java 21, and the module is compiled for that release.
 - BlastEm, only for live disassembly. The panel starts it as a child process, so it needs a display
   the emulator can open. Filling RAM asks one of its two debug channels, so it wants a build that
@@ -733,11 +750,16 @@ build.gradle             module build
 
 ## Known limits
 
+- **The Sega CD is experimental support for the moment.** A disc, the `.cue` sheet that describes it, the
+  volume of files it carries and the two address spaces are written and measured against a real disc by
+  the command line; they have not had the use in a window that the cartridge loaders have had, and the
+  panel of a disc runs one processor's trace at a time.
 - The SG-1000 and SC-3000 support is written and compiles, and it has **not been loaded from a real
-  cartridge**: the map is what the sources of an emulator say, and the machine is what the extension of
-  the file says, since the image itself carries neither a header nor anything else that names its
-  computer. Every import repeats this in its log. An image bigger than the `0xC000` byte window is placed
-  by the Master System's mapper, which neither computer had, and the log says that too.
+  cartridge, nor carried into a window**: the map is what the sources of an emulator say, and the machine
+  is what the extension of the file says, since the image itself carries neither a header nor anything
+  else that names its computer. Every import repeats this in its log. An image bigger than the `0xC000`
+  byte window is placed by the Master System's mapper, which neither computer had, and the log says that
+  too.
 - Of a Sega CD disc the loader reads the header sector and the two programs the header places, which is
   what the boot stage itself reaches before a game is in memory, and the list of files the volume of the
   disc carries. Everything else stays on the disc until a member is imported by name or the live trace
@@ -776,6 +798,8 @@ build.gradle             module build
   [Filling RAM from the emulator](#filling-ram-from-the-emulator) brings those bytes over, one window at a
   time and only while the machine stands in its debugger; a window of more than 64 KiB gives up the span
   the trace reached rather than the whole of itself, and what the machine never ran there stays unknown.
+  The two channels are measured by the command line and answer with the same bytes; the `Memory` row and
+  the `Fill RAM…` button of the panel have not been used in a window yet.
 - The trace tells Ghidra where code starts, not what the code does: functions, references and types
   still come from the analyzers, which is why *auto analysis* gives the fuller listing.
 - A checksum mismatch never fails the import. A patched or trimmed ROM keeps the value of the image
